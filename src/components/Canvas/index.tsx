@@ -1,0 +1,189 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import Konva from 'konva';
+import { Circle, Layer, Line, Stage } from 'react-konva';
+import { useStore } from '../../state/store';
+import DxfLayer from './DxfLayer';
+import LeaderLayer from './LeaderLayer';
+import ManifoldLayer from './ManifoldLayer';
+import ZoneLayer from './ZoneLayer';
+
+const PANEL_WIDTH = 320;
+const ZOOM_FACTOR = 1.15;
+
+export default function Canvas() {
+  const stageRef = useRef<Konva.Stage>(null);
+  const [viewport, setViewport] = useState({
+    width: Math.max(window.innerWidth - PANEL_WIDTH, 320),
+    height: window.innerHeight,
+  });
+
+  const {
+    dxfEntities,
+    dxfTransform,
+    zones,
+    selectedZoneId,
+    manifold,
+    toolMode,
+    drawingPoints,
+    calibration,
+    stageScale,
+    stageX,
+    stageY,
+    setManifold,
+    addDrawingPoint,
+    closeZone,
+    addCalibrationPoint,
+    setStageTransform,
+  } = useStore();
+
+  useEffect(() => {
+    const handleResize = () => {
+      setViewport({
+        width: Math.max(window.innerWidth - PANEL_WIDTH, 320),
+        height: window.innerHeight,
+      });
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const getPointerPos = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage) return null;
+
+    const position = stage.getPointerPosition();
+    if (!position) return null;
+
+    return {
+      x: (position.x - stageX) / stageScale,
+      y: (position.y - stageY) / stageScale,
+    };
+  }, [stageScale, stageX, stageY]);
+
+  const handleStageClick = useCallback(() => {
+    const position = getPointerPos();
+    if (!position) return;
+
+    if (toolMode === 'placeManifold') {
+      setManifold(position);
+      return;
+    }
+
+    if (toolMode === 'drawZone') {
+      addDrawingPoint(position);
+      return;
+    }
+
+    if (calibration.active) {
+      addCalibrationPoint(position);
+    }
+  }, [addCalibrationPoint, addDrawingPoint, calibration.active, getPointerPos, setManifold, toolMode]);
+
+  const handleStageDblClick = useCallback(() => {
+    if (toolMode === 'drawZone') {
+      closeZone();
+    }
+  }, [closeZone, toolMode]);
+
+  const handleWheel = useCallback(
+    (event: Konva.KonvaEventObject<WheelEvent>) => {
+      event.evt.preventDefault();
+      const stage = stageRef.current;
+      if (!stage) return;
+
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+
+      const mousePointTo = {
+        x: (pointer.x - stageX) / stageScale,
+        y: (pointer.y - stageY) / stageScale,
+      };
+
+      const newScale =
+        event.evt.deltaY > 0 ? stageScale / ZOOM_FACTOR : stageScale * ZOOM_FACTOR;
+
+      setStageTransform(
+        newScale,
+        pointer.x - mousePointTo.x * newScale,
+        pointer.y - mousePointTo.y * newScale,
+      );
+    },
+    [setStageTransform, stageScale, stageX, stageY],
+  );
+
+  const drawingFlatPoints = drawingPoints.flatMap((point) => [point.x, point.y]);
+
+  const cursor = calibration.active || toolMode === 'drawZone' || toolMode === 'placeManifold'
+    ? 'crosshair'
+    : 'default';
+
+  return (
+    <Stage
+      ref={stageRef}
+      width={viewport.width}
+      height={viewport.height}
+      onClick={handleStageClick}
+      onDblClick={handleStageDblClick}
+      onWheel={handleWheel}
+      draggable={toolMode === 'select' && !calibration.active}
+      x={stageX}
+      y={stageY}
+      scaleX={stageScale}
+      scaleY={stageScale}
+      onDragEnd={(event) => {
+        setStageTransform(stageScale, event.target.x(), event.target.y());
+      }}
+      style={{ cursor, background: '#1a1a2e' }}
+    >
+      <DxfLayer entities={dxfEntities} transform={dxfTransform} />
+      <ZoneLayer zones={zones} selectedZoneId={selectedZoneId} toolMode={toolMode} />
+      <LeaderLayer zones={zones} manifold={manifold} />
+      <ManifoldLayer manifold={manifold} />
+
+      <Layer>
+        {toolMode === 'drawZone' && drawingPoints.length > 0 && (
+          <>
+            <Line
+              points={drawingFlatPoints}
+              stroke="#f39c12"
+              strokeWidth={2}
+              dash={[5, 3]}
+              listening={false}
+            />
+            {drawingPoints.map((point, index) => (
+              <Circle
+                key={index}
+                x={point.x}
+                y={point.y}
+                radius={4}
+                fill="#f39c12"
+                listening={false}
+              />
+            ))}
+          </>
+        )}
+
+        {calibration.active && calibration.point1 && (
+          <Circle x={calibration.point1.x} y={calibration.point1.y} radius={5} fill="#e74c3c" />
+        )}
+        {calibration.active && calibration.point2 && (
+          <Circle x={calibration.point2.x} y={calibration.point2.y} radius={5} fill="#e74c3c" />
+        )}
+        {calibration.active && calibration.point1 && calibration.point2 && (
+          <Line
+            points={[
+              calibration.point1.x,
+              calibration.point1.y,
+              calibration.point2.x,
+              calibration.point2.y,
+            ]}
+            stroke="#e74c3c"
+            strokeWidth={2}
+            dash={[5, 3]}
+          />
+        )}
+      </Layer>
+    </Stage>
+  );
+}
