@@ -22,185 +22,194 @@ function arcPts(
   return pts;
 }
 
-/**
- * Generate a rectilinear serpentine path using VERTICAL passes.
- * Both ends of the path land near the bottom (manifoldAtBottom=true)
- * or top (manifoldAtBottom=false) edge.
- *
- * The serpentine uses N (even) vertical passes spaced by `spacing`.
- * Rounded U-turns (semicircles of radius = spacing/2) connect them.
- */
-function generateVPasses(
+function almostEqual(a: number, b: number, eps = 1e-6) {
+  return Math.abs(a - b) < eps;
+}
+
+function samePoint(a: Point, b: Point, eps = 1e-6) {
+  return almostEqual(a.x, b.x, eps) && almostEqual(a.y, b.y, eps);
+}
+
+function dedupePath(path: Point[]): Point[] {
+  if (path.length <= 1) return path;
+  const out: Point[] = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    if (!samePoint(path[i], out[out.length - 1])) out.push(path[i]);
+  }
+  return out;
+}
+
+function roundOrthogonalPath(path: Point[], radius: number): Point[] {
+  if (path.length < 3 || radius <= 0) return dedupePath(path);
+
+  const src = dedupePath(path);
+  if (src.length < 3) return src;
+
+  const out: Point[] = [src[0]];
+
+  for (let i = 1; i < src.length - 1; i++) {
+    const prev = src[i - 1];
+    const curr = src[i];
+    const next = src[i + 1];
+
+    const v1 = { x: curr.x - prev.x, y: curr.y - prev.y };
+    const v2 = { x: next.x - curr.x, y: next.y - curr.y };
+    const len1 = Math.hypot(v1.x, v1.y);
+    const len2 = Math.hypot(v2.x, v2.y);
+    if (len1 < 1e-9 || len2 < 1e-9) continue;
+
+    const d1 = { x: v1.x / len1, y: v1.y / len1 };
+    const d2 = { x: v2.x / len2, y: v2.y / len2 };
+
+    const isOrthogonal = almostEqual(d1.x * d2.x + d1.y * d2.y, 0, 1e-6);
+    if (!isOrthogonal) {
+      out.push(curr);
+      continue;
+    }
+
+    const trim = Math.min(radius, len1 / 2, len2 / 2);
+    if (trim <= 1e-9) {
+      out.push(curr);
+      continue;
+    }
+
+    const pIn = { x: curr.x - d1.x * trim, y: curr.y - d1.y * trim };
+    const pOut = { x: curr.x + d2.x * trim, y: curr.y + d2.y * trim };
+    const turn = d1.x * d2.y - d1.y * d2.x;
+    const nLeft = { x: -d1.y, y: d1.x };
+    const center =
+      turn > 0
+        ? { x: pIn.x + nLeft.x * trim, y: pIn.y + nLeft.y * trim }
+        : { x: pIn.x - nLeft.x * trim, y: pIn.y - nLeft.y * trim };
+
+    const a0 = Math.atan2(pIn.y - center.y, pIn.x - center.x);
+    let a1 = Math.atan2(pOut.y - center.y, pOut.x - center.x);
+    if (turn > 0 && a1 < a0) a1 += 2 * Math.PI;
+    if (turn < 0 && a1 > a0) a1 -= 2 * Math.PI;
+
+    out.push(pIn);
+    const arc = arcPts(center.x, center.y, trim, a0, a1, 6);
+    for (let k = 1; k < arc.length; k++) out.push(arc[k]);
+  }
+
+  out.push(src[src.length - 1]);
+  return dedupePath(out);
+}
+
+function generateInwardRectSpiral(
+  xMin: number,
+  xMax: number,
+  yMin: number,
+  yMax: number,
+  laneStep: number,
+  inset: number,
+): Point[] {
+  let left = xMin + inset;
+  let right = xMax - inset;
+  let top = yMin + inset;
+  let bottom = yMax - inset;
+  if (right - left <= 0 || bottom - top <= 0) return [];
+
+  const path: Point[] = [{ x: left, y: bottom }];
+
+  for (let guard = 0; guard < 2000; guard++) {
+    path.push({ x: right, y: bottom });
+    bottom -= laneStep;
+    if (top > bottom) break;
+
+    path.push({ x: right, y: top });
+    right -= laneStep;
+    if (left > right) break;
+
+    path.push({ x: left, y: top });
+    top += laneStep;
+    if (top > bottom) break;
+
+    path.push({ x: left, y: bottom });
+    left += laneStep;
+    if (left > right) break;
+  }
+
+  return dedupePath(path);
+}
+
+function mirrorY(path: Point[], yMin: number, yMax: number): Point[] {
+  return path.map((p) => ({ x: p.x, y: yMin + yMax - p.y }));
+}
+
+function mirrorX(path: Point[], xMin: number, xMax: number): Point[] {
+  return path.map((p) => ({ x: xMin + xMax - p.x, y: p.y }));
+}
+
+function swapXY(path: Point[]): Point[] {
+  return path.map((p) => ({ x: p.y, y: p.x }));
+}
+
+function generateDoubleSpiralBottom(
   xMin: number,
   xMax: number,
   yMin: number,
   yMax: number,
   spacing: number,
-  manifoldAtBottom: boolean,
 ): PipePath {
   const r = spacing / 2;
-  const width = xMax - xMin;
-  if (width < spacing) return [];
+  if (xMax - xMin < spacing * 2 || yMax - yMin < spacing * 2) return [];
 
-  let N = Math.floor(width / spacing);
-  if (N < 1) return [];
-  if (N % 2 !== 0) N = Math.max(2, N - 1); // force even
+  const laneStep = spacing * 2;
+  const outward = generateInwardRectSpiral(xMin, xMax, yMin, yMax, laneStep, r);
+  if (outward.length < 2) return [];
 
-  const x0 = xMin + r;
-  const path: Point[] = [];
+  const inwardReturn = generateInwardRectSpiral(xMin, xMax, yMin, yMax, laneStep, r + spacing);
+  const path = [...outward];
 
-  const yNear = manifoldAtBottom ? yMax : yMin; // manifold-facing edge
-  const yFar = manifoldAtBottom ? yMin : yMax;  // far edge
+  if (inwardReturn.length > 1) {
+    const centerTurn = inwardReturn[inwardReturn.length - 1];
+    if (!samePoint(path[path.length - 1], centerTurn)) path.push(centerTurn);
 
-  for (let i = 0; i < N; i++) {
-    const xi = x0 + i * spacing;
-    const isFirst = i === 0;
-    const isLast = i === N - 1;
-    const goingAway = manifoldAtBottom ? i % 2 === 0 : i % 2 !== 0;
-
-    if (isFirst) {
-      path.push({ x: xi, y: yNear }); // start at manifold edge (full extent)
-    }
-
-    if (isLast) {
-      // Last pass ends at manifold edge (full extent)
-      path.push({ x: xi, y: yNear });
-    } else if (goingAway) {
-      // This pass goes toward the far edge, ending before it for the U-turn
-      const yTurn = manifoldAtBottom ? yFar + r : yFar - r;
-      path.push({ x: xi, y: yTurn });
-
-      // U-turn at the far edge connecting xi to xi+spacing
-      if (manifoldAtBottom) {
-        // Top U-turn: from (xi, yMin+r) to (xi+spacing, yMin+r) going through (xi+r, yMin)
-        // Center: (xi+r, yMin+r), angles π -> 2π (counterclockwise in math, left-to-right via top)
-        const arc = arcPts(xi + r, yMin + r, r, Math.PI, 2 * Math.PI);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      } else {
-        // Bottom U-turn: from (xi, yMax-r) to (xi+spacing, yMax-r) going through (xi+r, yMax)
-        // Center: (xi+r, yMax-r), angles π -> 0 (clockwise in math, left-to-right via bottom)
-        const arc = arcPts(xi + r, yMax - r, r, Math.PI, 0);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      }
-    } else {
-      // This pass goes back toward the manifold edge, ending before it for the U-turn
-      const yTurn = manifoldAtBottom ? yNear - r : yNear + r;
-      path.push({ x: xi, y: yTurn });
-
-      // U-turn at the manifold edge connecting xi to xi+spacing
-      if (manifoldAtBottom) {
-        // Bottom U-turn: from (xi, yMax-r) to (xi+spacing, yMax-r) going through (xi+r, yMax)
-        const arc = arcPts(xi + r, yMax - r, r, Math.PI, 0);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      } else {
-        // Top U-turn
-        const arc = arcPts(xi + r, yMin + r, r, Math.PI, 2 * Math.PI);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      }
-    }
+    const returnOutward = [...inwardReturn].reverse();
+    for (let i = 1; i < returnOutward.length; i++) path.push(returnOutward[i]);
   }
 
-  return path;
+  return roundOrthogonalPath(path, r);
 }
 
-/**
- * Generate a rectilinear serpentine path using HORIZONTAL passes.
- * Both ends land near the left (manifoldAtLeft=true) or right edge.
- */
-function generateHPasses(
+type ManifoldSide = 'bottom' | 'top' | 'left' | 'right';
+
+function manifoldSide(
   xMin: number,
   xMax: number,
   yMin: number,
   yMax: number,
-  spacing: number,
-  manifoldAtLeft: boolean,
-): PipePath {
-  const r = spacing / 2;
-  const height = yMax - yMin;
-  if (height < spacing) return [];
+  hint: Point,
+): ManifoldSide {
+  const outLeft = Math.max(0, xMin - hint.x);
+  const outRight = Math.max(0, hint.x - xMax);
+  const outTop = Math.max(0, yMin - hint.y);
+  const outBottom = Math.max(0, hint.y - yMax);
+  const maxOut = Math.max(outLeft, outRight, outTop, outBottom);
 
-  let N = Math.floor(height / spacing);
-  if (N < 1) return [];
-  if (N % 2 !== 0) N = Math.max(2, N - 1); // force even
-
-  const y0 = yMin + r;
-  const path: Point[] = [];
-
-  const xNear = manifoldAtLeft ? xMin : xMax; // manifold-facing side
-  const xFar = manifoldAtLeft ? xMax : xMin;  // far side
-
-  for (let i = 0; i < N; i++) {
-    const yi = y0 + i * spacing;
-    const isFirst = i === 0;
-    const isLast = i === N - 1;
-    const goingAway = manifoldAtLeft ? i % 2 === 0 : i % 2 !== 0;
-
-    if (isFirst) {
-      path.push({ x: xNear, y: yi }); // start at manifold side (full extent)
-    }
-
-    if (isLast) {
-      path.push({ x: xNear, y: yi }); // end at manifold side
-    } else if (goingAway) {
-      // Going away from manifold, end before far edge for U-turn
-      const xTurn = manifoldAtLeft ? xFar - r : xFar + r;
-      path.push({ x: xTurn, y: yi });
-
-      // U-turn at the far edge
-      if (manifoldAtLeft) {
-        // Right U-turn: from (xMax-r, yi) to (xMax-r, yi+spacing) going through (xMax, yi+r)
-        // Center: (xMax-r, yi+r), angles -π/2 -> π/2 (counterclockwise, right-bulge)
-        const arc = arcPts(xMax - r, yi + r, r, -Math.PI / 2, Math.PI / 2);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      } else {
-        // Left U-turn: from (xMin+r, yi) to (xMin+r, yi+spacing) going through (xMin, yi+r)
-        // Center: (xMin+r, yi+r), angles 3π/2 -> π/2 (decreasing = left-bulge)
-        const arc = arcPts(xMin + r, yi + r, r, (3 * Math.PI) / 2, Math.PI / 2);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      }
-    } else {
-      // Going back toward manifold, end before near edge for U-turn
-      const xTurn = manifoldAtLeft ? xNear + r : xNear - r;
-      path.push({ x: xTurn, y: yi });
-
-      // U-turn at the manifold side
-      if (manifoldAtLeft) {
-        // Left U-turn: from (xMin+r, yi) to (xMin+r, yi+spacing) going through (xMin, yi+r)
-        const arc = arcPts(xMin + r, yi + r, r, (3 * Math.PI) / 2, Math.PI / 2);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      } else {
-        // Right U-turn
-        const arc = arcPts(xMax - r, yi + r, r, -Math.PI / 2, Math.PI / 2);
-        for (let k = 1; k < arc.length; k++) path.push(arc[k]);
-      }
-    }
+  if (maxOut > 0) {
+    if (maxOut === outBottom) return 'bottom';
+    if (maxOut === outTop) return 'top';
+    if (maxOut === outLeft) return 'left';
+    return 'right';
   }
 
-  return path;
+  const inLeft = hint.x - xMin;
+  const inRight = xMax - hint.x;
+  const inTop = hint.y - yMin;
+  const inBottom = yMax - hint.y;
+  const minIn = Math.min(inLeft, inRight, inTop, inBottom);
+
+  if (minIn === inBottom) return 'bottom';
+  if (minIn === inTop) return 'top';
+  if (minIn === inLeft) return 'left';
+  return 'right';
 }
 
 /**
- * Generate a rectilinear serpentine pipe path for a zone polygon.
- *
- * The fill uses only horizontal/vertical straight runs joined by rounded
- * 180° U-turns (fillet radius = spacing/2).  The orientation (H or V passes)
- * is chosen so that BOTH endpoints of the path land near the zone edge that
- * is closest to the manifold – satisfying the double-lane return requirement
- * without diagonal segments.
- *
- * Algorithm summary
- * -----------------
- *  • Compute the zone bounding box.
- *  • Determine which bounding-box edge is closest to the manifold and run
- *    passes PARALLEL to that edge (V passes for top/bottom, H for left/right).
- *  • Force the pass count N to be even so that the boustrophedon starts and
- *    ends on the same side of the bounding box (the manifold-facing side).
- *  • At each end of a pass, insert a semicircular arc (radius = spacing/2)
- *    as the U-turn so all corners are rounded; no diagonal segments exist.
- *
- * This "even-N boustrophedon" acts as the double-lane / counter-flow
- * arrangement: the outgoing and returning runs are interleaved (odd/even
- * passes) and both open ends land near the manifold edge.
+ * Generate a rectangular double-spiral pipe path (outbound + center turn + return),
+ * using horizontal/vertical segments and rounded 90° corners.
  */
 export function generateSerpentine(
   polygon: Polygon,
@@ -218,37 +227,19 @@ export function generateSerpentine(
 
   if (xMax - xMin <= 0 || yMax - yMin <= 0) return [];
 
-  // Default: treat manifold as far below the zone
   const hint = connectionHint ?? { x: (xMin + xMax) / 2, y: yMax + 1e9 };
+  const side = manifoldSide(xMin, xMax, yMin, yMax, hint);
 
-  // How far the manifold protrudes outside each edge of the bounding box.
-  // Using "protrusion" (max 0) means a manifold that is outside to the left
-  // gets a large outLeft value, while a manifold inside the zone gets 0 for all.
-  const outLeft   = Math.max(0, xMin - hint.x);   // manifold is to the left
-  const outRight  = Math.max(0, hint.x - xMax);   // manifold is to the right
-  const outTop    = Math.max(0, yMin - hint.y);   // manifold is above (smaller y in screen)
-  const outBottom = Math.max(0, hint.y - yMax);   // manifold is below (larger y in screen)
-  const maxOut = Math.max(outLeft, outRight, outTop, outBottom);
-
-  if (maxOut > 0) {
-    // Manifold is outside the zone – use the direction with the greatest protrusion
-    if (maxOut === outBottom) return generateVPasses(xMin, xMax, yMin, yMax, spacingPx, true);
-    if (maxOut === outTop)    return generateVPasses(xMin, xMax, yMin, yMax, spacingPx, false);
-    if (maxOut === outLeft)   return generateHPasses(xMin, xMax, yMin, yMax, spacingPx, true);
-    /* outRight */            return generateHPasses(xMin, xMax, yMin, yMax, spacingPx, false);
+  if (side === 'bottom') {
+    return generateDoubleSpiralBottom(xMin, xMax, yMin, yMax, spacingPx);
+  }
+  if (side === 'top') {
+    return mirrorY(generateDoubleSpiralBottom(xMin, xMax, yMin, yMax, spacingPx), yMin, yMax);
   }
 
-  // Manifold is inside the zone – use the closest edge
-  const inLeft   = hint.x - xMin;
-  const inRight  = xMax - hint.x;
-  const inTop    = hint.y - yMin;
-  const inBottom = yMax - hint.y;
-  const minIn = Math.min(inLeft, inRight, inTop, inBottom);
-
-  if (minIn === inBottom) return generateVPasses(xMin, xMax, yMin, yMax, spacingPx, true);
-  if (minIn === inTop)    return generateVPasses(xMin, xMax, yMin, yMax, spacingPx, false);
-  if (minIn === inLeft)   return generateHPasses(xMin, xMax, yMin, yMax, spacingPx, true);
-  /* inRight */           return generateHPasses(xMin, xMax, yMin, yMax, spacingPx, false);
+  const swapped = generateDoubleSpiralBottom(yMin, yMax, xMin, xMax, spacingPx);
+  const mapped = swapXY(swapped);
+  return side === 'left' ? mirrorX(mapped, xMin, xMax) : mapped;
 }
 
 /** Alias kept for backward-compatibility with store. */

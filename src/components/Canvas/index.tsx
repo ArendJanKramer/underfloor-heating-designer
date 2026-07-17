@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Konva from 'konva';
-import { Circle, Layer, Line, Rect, Stage } from 'react-konva';
+import { Circle, Layer, Line, Rect, Stage, Text } from 'react-konva';
 import { useStore } from '../../state/store';
 import DxfLayer from './DxfLayer';
 import ImageLayer from './ImageLayer';
@@ -29,6 +29,7 @@ export default function Canvas() {
     drawingPoints,
     drawRectStart,
     calibration,
+    pixelsPerMeter,
     stageScale,
     stageX,
     stageY,
@@ -164,6 +165,11 @@ export default function Canvas() {
         }
       : null;
 
+  const rectPreviewAreaM2 =
+    rectPreview && pixelsPerMeter > 0
+      ? (rectPreview.width * rectPreview.height) / (pixelsPerMeter * pixelsPerMeter)
+      : null;
+
   return (
     <Stage
       ref={stageRef}
@@ -231,17 +237,30 @@ export default function Canvas() {
           <Circle x={drawRectStart.x} y={drawRectStart.y} radius={5} fill="#f39c12" listening={false} />
         )}
         {rectPreview && (
-          <Rect
-            x={rectPreview.x}
-            y={rectPreview.y}
-            width={rectPreview.width}
-            height={rectPreview.height}
-            stroke="#f39c12"
-            strokeWidth={2}
-            dash={[6, 3]}
-            fill="rgba(243,156,18,0.1)"
-            listening={false}
-          />
+          <>
+            <Rect
+              x={rectPreview.x}
+              y={rectPreview.y}
+              width={rectPreview.width}
+              height={rectPreview.height}
+              stroke="#f39c12"
+              strokeWidth={2}
+              dash={[6, 3]}
+              fill="rgba(243,156,18,0.1)"
+              listening={false}
+            />
+            {rectPreviewAreaM2 !== null && (
+              <Text
+                x={rectPreview.x + 6}
+                y={rectPreview.y + 6}
+                text={`Area: ${rectPreviewAreaM2.toFixed(2)} m²`}
+                fill="#f39c12"
+                fontSize={14}
+                fontStyle="bold"
+                listening={false}
+              />
+            )}
+          </>
         )}
 
         {/* Calibration overlay */}

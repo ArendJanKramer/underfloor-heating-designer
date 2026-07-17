@@ -111,6 +111,10 @@ export default function ZoneCard({ zone, isSelected, maxCircuitLengthM }: Props)
 
       <div className={`zone-lengths ${isOverLimit ? 'over-limit' : ''}`}>
         <div className="length-row">
+          <span>Area:</span>
+          <span>{zone.areaM2.toFixed(2)} m²</span>
+        </div>
+        <div className="length-row">
           <span>Spiral:</span>
           <span>{zone.spiralLengthM.toFixed(1)} m</span>
         </div>

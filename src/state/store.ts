@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Background, CalibrationState, Manifold, Point, ToolMode, Zone } from '../types';
 import { generateSerpentine, getSpiralStubs } from '../geometry/spiral';
 import { leaderLengthPx, pathLengthPx, pxToMeters } from '../geometry/length';
+import { polygonArea } from '../geometry/offset';
 
 const ZONE_COLORS = [
   '#e74c3c',
@@ -74,6 +75,8 @@ function recomputeSpiral(
   const spiral = generateSerpentine(zone.polygon, spacingPx, hint);
   const spiralLengthPx = pathLengthPx(spiral);
   const spiralLengthM = pxToMeters(spiralLengthPx, pixelsPerMeter);
+  const areaPx = polygonArea(zone.polygon.points);
+  const areaM2 = pixelsPerMeter > 0 ? areaPx / (pixelsPerMeter * pixelsPerMeter) : 0;
 
   let leaderLengthM = 0;
   if (manifold && spiral.length > 0) {
@@ -86,7 +89,7 @@ function recomputeSpiral(
     }
   }
 
-  return { ...zone, spiral, spiralLengthM, leaderLengthM };
+  return { ...zone, spiral, spiralLengthM, leaderLengthM, areaM2 };
 }
 
 /** Build a rectangular polygon from two opposite corners */
@@ -155,6 +158,7 @@ export const useStore = create<StoreState>((set, get) => ({
       spiral: null,
       spiralLengthM: 0,
       leaderLengthM: 0,
+      areaM2: 0,
     };
 
     const computed = recomputeSpiral(newZone, manifold, pixelsPerMeter);
@@ -191,6 +195,7 @@ export const useStore = create<StoreState>((set, get) => ({
       spiral: null,
       spiralLengthM: 0,
       leaderLengthM: 0,
+      areaM2: 0,
     };
 
     const computed = recomputeSpiral(newZone, manifold, pixelsPerMeter);

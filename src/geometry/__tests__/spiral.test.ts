@@ -28,53 +28,74 @@ describe('generateSerpentine – degenerate inputs', () => {
 
 describe('generateSerpentine – pass count', () => {
   it('generates an even number of passes for a 400×300 rect at 50 px spacing (V passes)', () => {
-    // Manifold below → vertical passes
-    // width=400, spacing=50 → N_raw=8 (already even) → 8 passes
+    const spacing = 50;
     const hint = { x: 200, y: 10000 }; // far below → manifoldAtBottom
-    const path = generateSerpentine(rect(400, 300), 50, hint);
+    const path = generateSerpentine(rect(400, 300), spacing, hint);
     expect(path.length).toBeGreaterThan(4);
 
-    // Both endpoints must be near y=300 (bottom edge, manifold side)
+    // Both endpoints stay near the manifold-facing edge.
+    // With rounded corners, the centerline sits half-spacing from the wall.
     const start = path[0];
     const end = path[path.length - 1];
-    expect(start.y).toBeCloseTo(300, 0);
-    expect(end.y).toBeCloseTo(300, 0);
+    expect(start.y).toBeCloseTo(300 - spacing / 2, 0);
+    expect(end.y).toBeCloseTo(300 - spacing * 1.5, 0);
   });
 
   it('generates an even number of passes for a 300×400 rect at 50 px spacing (H passes)', () => {
-    // Manifold to the left
+    const spacing = 50;
     const hint = { x: -10000, y: 200 }; // far left → manifoldAtLeft
-    const path = generateSerpentine(rect(300, 400), 50, hint);
+    const path = generateSerpentine(rect(300, 400), spacing, hint);
     expect(path.length).toBeGreaterThan(4);
 
-    // Both endpoints must be near x=0 (left edge, manifold side)
+    // Both endpoints stay near the manifold-facing edge.
     const start = path[0];
     const end = path[path.length - 1];
-    expect(start.x).toBeCloseTo(0, 0);
-    expect(end.x).toBeCloseTo(0, 0);
+    expect(start.x).toBeCloseTo(spacing / 2, 0);
+    expect(end.x).toBeCloseTo(spacing * 1.5, 0);
   });
 });
 
 describe('generateSerpentine – both endpoints near manifold edge', () => {
   it('V passes – both ends at the bottom for a wide zone', () => {
+    const spacing = 60;
     const hint = { x: 200, y: 9999 }; // manifold far below
-    const path = generateSerpentine(rect(600, 300), 60, hint);
+    const path = generateSerpentine(rect(600, 300), spacing, hint);
     expect(path.length).toBeGreaterThan(2);
     const start = path[0];
     const end = path[path.length - 1];
-    // Both must be close to y=300 (bottom edge)
-    expect(Math.abs(start.y - 300)).toBeLessThan(5);
-    expect(Math.abs(end.y - 300)).toBeLessThan(5);
+    expect(Math.abs(start.y - (300 - spacing / 2))).toBeLessThan(5);
+    expect(Math.abs(end.y - (300 - spacing * 1.5))).toBeLessThan(5);
   });
 
   it('H passes – both ends at the left for a tall zone', () => {
+    const spacing = 60;
     const hint = { x: -9999, y: 300 }; // manifold far left
-    const path = generateSerpentine(rect(300, 600), 60, hint);
+    const path = generateSerpentine(rect(300, 600), spacing, hint);
     expect(path.length).toBeGreaterThan(2);
     const start = path[0];
     const end = path[path.length - 1];
-    expect(Math.abs(start.x)).toBeLessThan(5);
-    expect(Math.abs(end.x)).toBeLessThan(5);
+    expect(Math.abs(start.x - spacing / 2)).toBeLessThan(5);
+    expect(Math.abs(end.x - spacing * 1.5)).toBeLessThan(5);
+  });
+
+  it('turns in the center and returns toward the manifold side', () => {
+    const spacing = 50;
+    const hint = { x: 200, y: 10000 }; // manifold below
+    const path = generateSerpentine(rect(400, 300), spacing, hint);
+    expect(path.length).toBeGreaterThan(10);
+
+    let minY = Infinity;
+    let minIdx = -1;
+    for (let i = 0; i < path.length; i++) {
+      if (path[i].y < minY) {
+        minY = path[i].y;
+        minIdx = i;
+      }
+    }
+
+    expect(minIdx).toBeGreaterThan(0);
+    const returns = path.slice(minIdx + 1).some((p) => p.y > minY + spacing / 2);
+    expect(returns).toBe(true);
   });
 });
 

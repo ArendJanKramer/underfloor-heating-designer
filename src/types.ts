@@ -18,6 +18,7 @@ export interface Zone {
   spiral: PipePath | null;
   spiralLengthM: number;
   leaderLengthM: number;
+  areaM2: number;
 }
 
 export interface Manifold {
