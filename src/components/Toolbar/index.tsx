@@ -5,6 +5,7 @@ const TOOL_OPTIONS: Array<{ mode: ToolMode; label: string }> = [
   { mode: 'select', label: '↖ Select' },
   { mode: 'placeManifold', label: '🔧 Manifold' },
   { mode: 'drawZone', label: '✏️ Draw Zone' },
+  { mode: 'drawRect', label: '▭ Draw Rect' },
 ];
 
 export default function Toolbar() {

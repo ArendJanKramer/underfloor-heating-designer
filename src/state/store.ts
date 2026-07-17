@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { CalibrationState, DxfEntity, Manifold, Point, ToolMode, Zone } from '../types';
-import { getSpiralStubs, generateSpiral } from '../geometry/spiral';
+import { Background, CalibrationState, Manifold, Point, ToolMode, Zone } from '../types';
+import { generateSerpentine, getSpiralStubs } from '../geometry/spiral';
 import { leaderLengthPx, pathLengthPx, pxToMeters } from '../geometry/length';
 
 const ZONE_COLORS = [
@@ -20,27 +20,32 @@ interface StoreState {
   pixelsPerMeter: number;
   maxCircuitLengthM: number;
   defaultSpacingMm: number;
-  dxfEntities: DxfEntity[];
-  dxfTransform: { offsetX: number; offsetY: number; scale: number };
+  /** Discriminated-union background layer (DXF or raster image, or null) */
+  background: Background | null;
   zones: Zone[];
   selectedZoneId: string | null;
   manifold: Manifold | null;
   toolMode: ToolMode;
   drawingPoints: Point[];
+  /** First corner for rectangle-zone drawing */
+  drawRectStart: Point | null;
   calibration: CalibrationState;
   stageScale: number;
   stageX: number;
   stageY: number;
-  setDxfEntities: (
-    entities: DxfEntity[],
-    transform: { offsetX: number; offsetY: number; scale: number },
-  ) => void;
+
+  setBackground: (bg: Background | null) => void;
   setToolMode: (mode: ToolMode) => void;
   setManifold: (pos: Point) => void;
   updateManifoldPosition: (pos: Point) => void;
   addDrawingPoint: (pt: Point) => void;
   closeZone: () => void;
   cancelDrawing: () => void;
+  /** Start a rectangle zone: record the first corner */
+  startDrawRect: (pt: Point) => void;
+  /** Finish a rectangle zone: record the opposite corner and create the zone */
+  finishDrawRect: (pt: Point) => void;
+  cancelDrawRect: () => void;
   deleteZone: (id: string) => void;
   selectZone: (id: string | null) => void;
   updateZoneSpacing: (id: string, spacingMm: number) => void;
@@ -66,7 +71,7 @@ function recomputeSpiral(
 ): Zone {
   const spacingPx = (zone.spacingMm / 1000) * pixelsPerMeter;
   const hint = manifold?.position;
-  const spiral = generateSpiral(zone.polygon, spacingPx, hint);
+  const spiral = generateSerpentine(zone.polygon, spacingPx, hint);
   const spiralLengthPx = pathLengthPx(spiral);
   const spiralLengthM = pxToMeters(spiralLengthPx, pixelsPerMeter);
 
@@ -84,25 +89,37 @@ function recomputeSpiral(
   return { ...zone, spiral, spiralLengthM, leaderLengthM };
 }
 
+/** Build a rectangular polygon from two opposite corners */
+function rectPolygon(a: Point, b: Point) {
+  return {
+    points: [
+      { x: a.x, y: a.y },
+      { x: b.x, y: a.y },
+      { x: b.x, y: b.y },
+      { x: a.x, y: b.y },
+    ],
+  };
+}
+
 export const useStore = create<StoreState>((set, get) => ({
   pixelsPerMeter: 100,
   maxCircuitLengthM: 100,
   defaultSpacingMm: 150,
-  dxfEntities: [],
-  dxfTransform: { offsetX: 0, offsetY: 0, scale: 1 },
+  background: null,
   zones: [],
   selectedZoneId: null,
   manifold: null,
   toolMode: 'select',
   drawingPoints: [],
+  drawRectStart: null,
   calibration: { active: false, point1: null, point2: null },
   stageScale: 1,
   stageX: 0,
   stageY: 0,
 
-  setDxfEntities: (entities, transform) => set({ dxfEntities: entities, dxfTransform: transform }),
+  setBackground: (bg) => set({ background: bg }),
 
-  setToolMode: (mode) => set({ toolMode: mode, drawingPoints: [] }),
+  setToolMode: (mode) => set({ toolMode: mode, drawingPoints: [], drawRectStart: null }),
 
   setManifold: (pos) => {
     set({ manifold: { position: pos }, toolMode: 'select' });
@@ -150,6 +167,42 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   cancelDrawing: () => set({ drawingPoints: [], toolMode: 'select' }),
+
+  startDrawRect: (pt) => set({ drawRectStart: pt }),
+
+  finishDrawRect: (pt) => {
+    const { drawRectStart, zones, manifold, pixelsPerMeter, defaultSpacingMm } = get();
+    if (!drawRectStart) return;
+
+    // Need at least a minimal area (avoid degenerate rects)
+    if (Math.abs(pt.x - drawRectStart.x) < 2 || Math.abs(pt.y - drawRectStart.y) < 2) {
+      set({ drawRectStart: null, toolMode: 'select' });
+      return;
+    }
+
+    const colorIdx = zones.length % ZONE_COLORS.length;
+    const id = `zone-${Date.now()}`;
+    const newZone: Zone = {
+      id,
+      name: `Zone ${zoneCounter++}`,
+      color: ZONE_COLORS[colorIdx],
+      polygon: rectPolygon(drawRectStart, pt),
+      spacingMm: defaultSpacingMm,
+      spiral: null,
+      spiralLengthM: 0,
+      leaderLengthM: 0,
+    };
+
+    const computed = recomputeSpiral(newZone, manifold, pixelsPerMeter);
+    set({
+      zones: [...zones, computed],
+      drawRectStart: null,
+      toolMode: 'select',
+      selectedZoneId: id,
+    });
+  },
+
+  cancelDrawRect: () => set({ drawRectStart: null, toolMode: 'select' }),
 
   deleteZone: (id) =>
     set((state) => ({

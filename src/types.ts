@@ -24,7 +24,7 @@ export interface Manifold {
   position: Point;
 }
 
-export type ToolMode = 'select' | 'placeManifold' | 'drawZone' | 'editBoundary';
+export type ToolMode = 'select' | 'placeManifold' | 'drawZone' | 'drawRect' | 'editBoundary';
 
 export interface DxfEntity {
   type: string;
@@ -39,14 +39,25 @@ export interface DxfEntity {
   closed?: boolean;
 }
 
-export interface Project {
-  pixelsPerMeter: number;
-  zones: Zone[];
-  manifold: Manifold | null;
-  dxfEntities: DxfEntity[];
-  maxCircuitLengthM: number;
-  defaultSpacingMm: number;
+export interface DxfTransform {
+  offsetX: number;
+  offsetY: number;
+  scale: number;
 }
+
+/** Discriminated union for the background floor-plan layer */
+export type Background =
+  | { kind: 'dxf'; entities: DxfEntity[]; transform: DxfTransform }
+  | {
+      kind: 'image';
+      src: string;
+      naturalWidth: number;
+      naturalHeight: number;
+      /** Computed fit-to-viewport transform (set on load) */
+      fitX: number;
+      fitY: number;
+      fitScale: number;
+    };
 
 export interface CalibrationState {
   active: boolean;

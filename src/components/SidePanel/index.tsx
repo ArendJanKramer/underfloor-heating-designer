@@ -5,6 +5,25 @@ import { useStore } from '../../state/store';
 import Toolbar from '../Toolbar';
 import ZoneCard from './ZoneCard';
 
+const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif';
+
+/** Compute the fit-to-viewport transform for an image. */
+function fitImageToViewport(
+  naturalWidth: number,
+  naturalHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  padding = 40,
+): { fitX: number; fitY: number; fitScale: number } {
+  if (naturalWidth <= 0 || naturalHeight <= 0) return { fitX: 0, fitY: 0, fitScale: 1 };
+  const scaleX = (viewportWidth - 2 * padding) / naturalWidth;
+  const scaleY = (viewportHeight - 2 * padding) / naturalHeight;
+  const fitScale = Math.min(scaleX, scaleY);
+  const fitX = (viewportWidth - naturalWidth * fitScale) / 2;
+  const fitY = (viewportHeight - naturalHeight * fitScale) / 2;
+  return { fitX, fitY, fitScale };
+}
+
 export default function SidePanel() {
   const {
     zones,
@@ -15,8 +34,8 @@ export default function SidePanel() {
     pixelsPerMeter,
     maxCircuitLengthM,
     defaultSpacingMm,
-    dxfEntities,
-    setDxfEntities,
+    background,
+    setBackground,
     setMaxCircuitLength,
     setDefaultSpacing,
     startCalibration,
@@ -26,34 +45,65 @@ export default function SidePanel() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [calibrationDistance, setCalibrationDistance] = useState('1.0');
-  const [dxfError, setDxfError] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
-  const handleDxfImport = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    setImportError(null);
 
-    setDxfError(null);
-    const reader = new FileReader();
+    const isDxf = file.name.toLowerCase().endsWith('.dxf');
 
-    reader.onload = (loadEvent) => {
-      try {
-        const content = loadEvent.target?.result as string;
-        const parser = new DxfParser();
-        const dxf = parser.parseSync(content);
-        const entities = parseDxfEntities(dxf as { entities: unknown[] });
-        const transform = fitDxfToViewport(
-          entities,
-          Math.max(window.innerWidth - 320, 320),
-          window.innerHeight,
-        );
-        setDxfEntities(entities, transform);
-      } catch (error) {
-        setDxfError('Failed to parse DXF file. Make sure it is a valid AutoCAD DXF.');
-        console.error(error);
-      }
-    };
+    if (isDxf) {
+      // ---- DXF import ----
+      const reader = new FileReader();
+      reader.onload = (loadEvent) => {
+        try {
+          const content = loadEvent.target?.result as string;
+          const parser = new DxfParser();
+          const dxf = parser.parseSync(content);
+          const entities = parseDxfEntities(dxf as { entities: unknown[] });
+          if (entities.length === 0) {
+            setImportError('DXF parsed but contains no supported entities (LINE, POLYLINE, CIRCLE, ARC). Try importing an image instead.');
+            return;
+          }
+          const transform = fitDxfToViewport(
+            entities,
+            Math.max(window.innerWidth - 320, 320),
+            window.innerHeight,
+          );
+          setBackground({ kind: 'dxf', entities, transform });
+        } catch (error) {
+          setImportError('Failed to parse DXF. Make sure it is a valid AutoCAD DXF file, or try importing an image.');
+          console.error(error);
+        }
+      };
+      reader.readAsText(file);
+    } else {
+      // ---- Raster image import ----
+      const src = URL.createObjectURL(file);
+      const img = new window.Image();
+      img.onload = () => {
+        const vw = Math.max(window.innerWidth - 320, 320);
+        const vh = window.innerHeight;
+        const { fitX, fitY, fitScale } = fitImageToViewport(img.naturalWidth, img.naturalHeight, vw, vh);
+        setBackground({
+          kind: 'image',
+          src,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          fitX,
+          fitY,
+          fitScale,
+        });
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(src);
+        setImportError('Failed to load image file.');
+      };
+      img.src = src;
+    }
 
-    reader.readAsText(file);
     event.target.value = '';
   };
 
@@ -62,6 +112,12 @@ export default function SidePanel() {
     0,
   );
 
+  const bgStatus = background === null
+    ? null
+    : background.kind === 'dxf'
+      ? `DXF loaded – ${background.entities.length} entities`
+      : `Image loaded – ${background.naturalWidth}×${background.naturalHeight} px`;
+
   return (
     <div className="side-panel">
       <div className="panel-header">
@@ -69,19 +125,31 @@ export default function SidePanel() {
       </div>
 
       <section className="panel-section">
-        <h2>📐 Floor Plan (DXF)</h2>
+        <h2>📐 Floor Plan</h2>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".dxf"
-          onChange={handleDxfImport}
+          accept={`.dxf,${IMAGE_ACCEPT}`}
+          onChange={handleFileChange}
           style={{ display: 'none' }}
         />
         <button className="btn" onClick={() => fileInputRef.current?.click()}>
-          {dxfEntities.length > 0 ? '🔄 Re-import DXF' : '📁 Import DXF'}
+          {background ? '🔄 Re-import DXF or Image' : '📁 Import DXF or Image'}
         </button>
-        {dxfError && <p className="error">{dxfError}</p>}
-        {dxfEntities.length > 0 && <p className="info">{dxfEntities.length} entities loaded</p>}
+        <p className="info" style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+          Accepts: DXF, PNG, JPG, WEBP, GIF
+        </p>
+        {importError && <p className="error">{importError}</p>}
+        {bgStatus && <p className="info">{bgStatus}</p>}
+        {background && (
+          <button
+            className="btn btn-secondary"
+            style={{ marginTop: '4px' }}
+            onClick={() => setBackground(null)}
+          >
+            🗑 Clear background
+          </button>
+        )}
       </section>
 
       <section className="panel-section">
@@ -134,6 +202,9 @@ export default function SidePanel() {
         {toolMode === 'drawZone' && (
           <p className="info">Click to add points. Double-click or Enter to close.</p>
         )}
+        {toolMode === 'drawRect' && (
+          <p className="info">Click first corner, then click opposite corner to create a rectangle zone.</p>
+        )}
         {toolMode === 'placeManifold' && (
           <p className="info">Click on canvas to place the manifold.</p>
         )}
@@ -171,7 +242,7 @@ export default function SidePanel() {
           🏠 Zones {zones.length > 0 && <span className="zone-count">{zones.length}</span>}
         </h2>
         {zones.length === 0 && (
-          <p className="info">No zones yet. Use "Draw Zone" to create one.</p>
+          <p className="info">No zones yet. Use "Draw Zone" or "Draw Rect" to create one.</p>
         )}
         <div className="zone-list">
           {zones.map((zone) => (
