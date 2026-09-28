@@ -76,4 +76,34 @@ describe('SidePanel calibration and zone totals', () => {
 
         expect(screen.getByText('Total area: 4.00 m²')).toBeTruthy();
     });
+
+    it('provides controls to remove a leader route and the manifold', () => {
+        const routedZone = {
+            ...squareZone,
+            leaderWaypoints: [],
+            manifoldPortOffsetMm: 0,
+            leaderLengthMm: 1000,
+        };
+        act(() => useStore.setState({
+            manifold: { position: { x: 3000, y: 1000 }, rotationDeg: 0 },
+            zones: [routedZone],
+        }));
+        render(<SidePanel />);
+
+        fireEvent.click(screen.getByRole('button', { name: /zones/i }));
+        fireEvent.click(screen.getByRole('button', { name: 'Remove leader route for Test zone' }));
+        expect(useStore.getState().zones[0].leaderWaypoints).toBeNull();
+        expect(useStore.getState().manifold).not.toBeNull();
+
+        act(() => useStore.setState({ zones: [routedZone] }));
+        fireEvent.click(screen.getByRole('button', { name: /setup/i }));
+        fireEvent.click(screen.getByRole('button', { name: 'Remove all leader routes' }));
+        expect(useStore.getState().zones[0].leaderWaypoints).toBeNull();
+        expect(useStore.getState().manifold).not.toBeNull();
+
+        act(() => useStore.setState({ zones: [routedZone] }));
+        fireEvent.click(screen.getByRole('button', { name: 'Remove manifold' }));
+        expect(useStore.getState().manifold).toBeNull();
+        expect(useStore.getState().zones[0].leaderWaypoints).toBeNull();
+    });
 });

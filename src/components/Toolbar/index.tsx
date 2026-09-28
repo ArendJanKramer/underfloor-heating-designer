@@ -20,6 +20,7 @@ const TOOL_OPTIONS: Array<{ mode: ToolMode; label: string; Icon: typeof Wrench }
 
 export default function Toolbar() {
   const toolMode = useStore((state) => state.toolMode);
+  const manifold = useStore((state) => state.manifold);
   const setToolMode = useStore((state) => state.setToolMode);
   const fitViewToContent = useStore((state) => state.fitViewToContent);
 
@@ -30,6 +31,8 @@ export default function Toolbar() {
           key={mode}
           className={`btn tool-btn ${toolMode === mode ? 'active' : ''}`}
           onClick={() => setToolMode(mode)}
+          disabled={mode === 'routeLeader' && !manifold}
+          title={mode === 'routeLeader' && !manifold ? 'Place a manifold before routing leaders' : undefined}
         >
           <Icon />
           {label}

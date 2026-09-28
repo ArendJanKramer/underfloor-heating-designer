@@ -325,6 +325,60 @@ describe('useStore persistence', () => {
     expect(store.getState().zones[0].manifoldPortOffsetMm).toBe(routed.manifoldPortOffsetMm);
   });
 
+  it('removes one leader route without changing other zones', () => {
+    const store = createUfhStore();
+    const routed = { ...persistedZone, leaderWaypoints: [], manifoldPortOffsetMm: 100, leaderLengthMm: 1200 };
+    const other = { ...routed, id: 'zone-2', name: 'Zone 2' };
+    store.setState({ zones: [routed, other], routing: { zoneId: routed.id, points: [] } });
+
+    store.getState().removeZoneLeaderRoute(routed.id);
+
+    expect(store.getState().zones[0]).toMatchObject({
+      leaderWaypoints: null,
+      manifoldPortOffsetMm: null,
+      leaderLengthMm: 0,
+    });
+    expect(store.getState().zones[1]).toEqual(other);
+    expect(store.getState().routing).toBeNull();
+  });
+
+  it('can clear all routes or remove the manifold without deleting zone spirals', () => {
+    const store = createUfhStore();
+    store.setState({
+      manifold: { position: { x: 5000, y: 1000 }, rotationDeg: 0 },
+      zones: [persistedZone],
+    });
+    store.getState().recomputeZoneSpiral(persistedZone.id);
+    store.getState().startRouteZone(persistedZone.id);
+    store.getState().addRoutePoint({ x: 3000, y: 1900 });
+    store.getState().finishRouting({ x: 5000, y: 1000 });
+    const spiral = store.getState().zones[0].spiral;
+    expect(store.getState().zones[0].leaderWaypoints).not.toBeNull();
+
+    store.getState().removeAllLeaderRoutes();
+    expect(store.getState().manifold).not.toBeNull();
+    expect(store.getState().zones[0]).toMatchObject({
+      spiral,
+      leaderWaypoints: null,
+      manifoldPortOffsetMm: null,
+      leaderLengthMm: 0,
+    });
+
+    store.getState().startRouteZone(persistedZone.id);
+    store.getState().finishRouting({ x: 5000, y: 1000 });
+    store.getState().setToolMode('routeLeader');
+    store.getState().removeManifold();
+    expect(store.getState().manifold).toBeNull();
+    expect(store.getState().toolMode).toBe('select');
+    expect(store.getState().routing).toBeNull();
+    expect(store.getState().zones[0]).toMatchObject({
+      spiral,
+      leaderWaypoints: null,
+      manifoldPortOffsetMm: null,
+      leaderLengthMm: 0,
+    });
+  });
+
   it('calibrates the plan and existing design together, then recomputes pipe lengths', () => {
     const store = createUfhStore();
     const manifold = { position: { x: 5000, y: 1000 }, rotationDeg: 90 };

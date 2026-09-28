@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MoveHorizontal, MoveVertical, Pencil, Trash2, TriangleAlert } from 'lucide-react';
+import { MoveHorizontal, MoveVertical, Pencil, Trash2, TriangleAlert, X } from 'lucide-react';
 import { SpiralStartDirection, Zone, ZoneConnectionCorner } from '../../types';
 import { useStore } from '../../state/store';
 import EditableSelect from './EditableSelect';
@@ -32,6 +32,7 @@ export default function ZoneCard({ zone, isSelected, maxCircuitLengthM }: Props)
   const {
     selectZone,
     deleteZone,
+    removeZoneLeaderRoute,
     updateZoneSpacing,
     updateZonePadding,
     updateZoneConnectionCorner,
@@ -85,6 +86,19 @@ export default function ZoneCard({ zone, isSelected, maxCircuitLengthM }: Props)
           </span>
         )}
         <div className="zone-actions">
+          {zone.leaderWaypoints !== null && (
+            <button
+              className="btn-icon btn-danger"
+              title={`Remove leader route for ${zone.name}`}
+              aria-label={`Remove leader route for ${zone.name}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                removeZoneLeaderRoute(zone.id);
+              }}
+            >
+              <X />
+            </button>
+          )}
           <button
             className="btn-icon"
             title="Edit boundary"

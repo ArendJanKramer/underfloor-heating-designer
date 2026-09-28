@@ -50,6 +50,8 @@ export default function SidePanel() {
         setMaxCircuitLength,
         setDefaultSpacing,
         setManifoldRotation,
+        removeManifold,
+        removeAllLeaderRoutes,
         startCalibration,
         finishCalibration,
         cancelCalibration,
@@ -391,6 +393,20 @@ export default function SidePanel() {
                             />
                             <span>deg</span>
                         </div>
+                        {manifold && (
+                            <button className="btn btn-secondary" onClick={removeManifold}>
+                                <Trash2 /> Remove manifold
+                            </button>
+                        )}
+                        {zones.some((zone) => zone.leaderWaypoints !== null) && (
+                            <button
+                                className="btn btn-secondary"
+                                style={{ marginTop: '4px' }}
+                                onClick={removeAllLeaderRoutes}
+                            >
+                                <Trash2 /> Remove all leader routes
+                            </button>
+                        )}
                     </section>
                 </div>
             )}

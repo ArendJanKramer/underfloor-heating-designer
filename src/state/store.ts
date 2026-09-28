@@ -104,6 +104,7 @@ interface StoreState {
   moveBackground: (deltaX: number, deltaY: number) => void;
   setToolMode: (mode: ToolMode) => void;
   setManifold: (pos: Point) => void;
+  removeManifold: () => void;
   updateManifoldPosition: (pos: Point) => void;
   setManifoldRotation: (rotationDeg: number) => void;
   addDrawingPoint: (pt: Point) => void;
@@ -115,6 +116,8 @@ interface StoreState {
   finishDrawRect: (pt: Point) => void;
   cancelDrawRect: () => void;
   deleteZone: (id: string) => void;
+  removeZoneLeaderRoute: (id: string) => void;
+  removeAllLeaderRoutes: () => void;
   selectZone: (id: string | null) => void;
   updateZoneSpacing: (id: string, spacingMm: number) => void;
   updateZonePadding: (id: string, paddingMm: number) => void;
@@ -790,6 +793,15 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
     set({ manifold, toolMode: 'select', routing: null, zones: recomputeZones(get().zones, manifold) });
   },
 
+  removeManifold: () => set((state) => ({
+    manifold: null,
+    routing: null,
+    toolMode: state.toolMode === 'routeLeader' || state.toolMode === 'placeManifold'
+      ? 'select'
+      : state.toolMode,
+    zones: state.zones.map(clearZoneLeaderRouting),
+  })),
+
   updateManifoldPosition: (pos) => {
     const rotationDeg = get().manifold?.rotationDeg ?? 0;
     const manifold = { position: pos, rotationDeg };
@@ -898,6 +910,16 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
       zones: state.zones.filter((zone) => zone.id !== id),
       selectedZoneId: state.selectedZoneId === id ? null : state.selectedZoneId,
     })),
+
+  removeZoneLeaderRoute: (id) => set((state) => ({
+    zones: state.zones.map((zone) => zone.id === id ? clearZoneLeaderRouting(zone) : zone),
+    routing: state.routing?.zoneId === id ? null : state.routing,
+  })),
+
+  removeAllLeaderRoutes: () => set((state) => ({
+    zones: state.zones.map(clearZoneLeaderRouting),
+    routing: null,
+  })),
 
   selectZone: (id) => set({ selectedZoneId: id }),
 
