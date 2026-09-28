@@ -371,6 +371,21 @@ describe('useStore persistence', () => {
     expect(state.calibration.active).toBe(false);
   });
 
+  it('gives calibration clicks priority over an unfinished polygon', () => {
+    const store = createUfhStore();
+    store.setState({
+      background: persistedImageBackground,
+      toolMode: 'drawZone',
+      drawingPoints: [{ x: 100, y: 100 }],
+    });
+
+    store.getState().startCalibration();
+
+    expect(store.getState().toolMode).toBe('select');
+    expect(store.getState().drawingPoints).toEqual([]);
+    expect(store.getState().calibration).toEqual({ active: true, point1: null, point2: null });
+  });
+
   it('holds the first calibration point still while the plan resizes around it', () => {
     const store = createUfhStore();
     store.setState({ background: { ...persistedImageBackground, x: 1000, y: 0, mmPerPixel: 10 } });

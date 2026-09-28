@@ -16,7 +16,7 @@ import {
     Upload,
 } from 'lucide-react';
 import { parseDxfEntities, placeDxfInDrawing } from '../../geometry/dxfHelpers';
-import { mmToMeters } from '../../geometry/length';
+import { mm2ToSquareMeters, mmToMeters } from '../../geometry/length';
 import { UFH_STORE_STORAGE_KEY, partializeStoreState, useStore } from '../../state/store';
 import HeatTab from './HeatTab';
 import { COMMON_PIPE_OUTER_DIAMETERS_MM, PIPE_WALL_MM } from '../../geometry/heat';
@@ -58,7 +58,7 @@ export default function SidePanel() {
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const projectFileInputRef = useRef<HTMLInputElement>(null);
-    const [calibrationDistance, setCalibrationDistance] = useState('1000');
+    const [calibrationDistance, setCalibrationDistance] = useState('1');
     const [importError, setImportError] = useState<string | null>(null);
     const [projectError, setProjectError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'setup' | 'zones' | 'heat'>('setup');
@@ -187,6 +187,10 @@ export default function SidePanel() {
         (sum, zone) => sum + mmToMeters(zone.spiralLengthMm + zone.leaderLengthMm),
         0,
     );
+    const totalAreaM2 = zones.reduce(
+        (sum, zone) => sum + mm2ToSquareMeters(zone.areaMm2),
+        0,
+    );
 
     const bgStatus = background === null
         ? null
@@ -287,9 +291,8 @@ export default function SidePanel() {
                     <section className="panel-section">
                         <h2><Ruler /> Scale Calibration</h2>
                         <p className="info">
-                            The drawing is in millimetres, so zones are already true to size.
-                            Calibrating resizes the imported plan to match them — measure two
-                            points on the plan and give their real distance.
+                            Calibrating resizes the imported plan to its real scale. Measure two
+                            points on the plan and enter their real distance in metres.
                         </p>
                         {!background && (
                             <p className="info">Import a floor plan first — there is nothing to calibrate.</p>
@@ -311,16 +314,17 @@ export default function SidePanel() {
                                     <div className="calibration-input">
                                         <input
                                             type="number"
-                                            step="10"
-                                            min="1"
+                                            step="0.01"
+                                            min="0.001"
                                             value={calibrationDistance}
                                             onChange={(event) => setCalibrationDistance(event.target.value)}
-                                            placeholder="Real distance (mm)"
+                                            placeholder="Real distance (m)"
+                                            aria-label="Real calibration distance in metres"
                                         />
-                                        <span>mm</span>
+                                        <span>m</span>
                                         <button
                                             className="btn btn-primary"
-                                            onClick={() => finishCalibration(Number(calibrationDistance))}
+                                            onClick={() => finishCalibration(Number(calibrationDistance) * 1000)}
                                         >
                                             <Check /> Apply
                                         </button>
@@ -410,7 +414,8 @@ export default function SidePanel() {
 
                         {zones.length > 0 && (
                             <div className="grand-total">
-                                <strong>Grand Total: {totalGrand.toFixed(1)} m</strong>
+                                <strong>Grand total pipe: {totalGrand.toFixed(1)} m</strong>
+                                <strong>Total area: {totalAreaM2.toFixed(2)} m²</strong>
                             </div>
                         )}
                     </section>

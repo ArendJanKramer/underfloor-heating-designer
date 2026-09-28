@@ -4,10 +4,10 @@ import { generateSerpentine } from '../spiral';
 
 const diamond: Polygon = {
   points: [
-    { x: 100, y: 0 },
-    { x: 200, y: 100 },
-    { x: 100, y: 200 },
-    { x: 0, y: 100 },
+    { x: 2000, y: 0 },
+    { x: 4000, y: 2000 },
+    { x: 2000, y: 4000 },
+    { x: 0, y: 2000 },
   ],
 };
 
@@ -50,7 +50,7 @@ function distanceToSegment(p: Point, a: Point, b: Point): number {
 
 describe('generateSerpentine – non-rectangular zones (contour parallel)', () => {
   it('keeps every point inside a diamond zone (no loops outside the polygon)', () => {
-    const path = generateSerpentine(diamond, 15, { x: 100, y: 1e9 }, 8);
+    const path = generateSerpentine(diamond, 150, { x: 2000, y: 1e9 }, 100);
 
     expect(path.length).toBeGreaterThan(4);
     for (const point of path) {
@@ -59,20 +59,20 @@ describe('generateSerpentine – non-rectangular zones (contour parallel)', () =
   });
 
   it('stays well inside the bounding box corners of the diamond', () => {
-    const path = generateSerpentine(diamond, 15, { x: 100, y: 1e9 }, 8);
+    const path = generateSerpentine(diamond, 150, { x: 2000, y: 1e9 }, 100);
 
     // A bounding-box spiral would reach the rectangle corners (0,0)/(200,0)/...
     // The contour spiral must not: every point stays clear of those corners.
     const cornerRegions: Point[] = [
       { x: 0, y: 0 },
-      { x: 200, y: 0 },
-      { x: 200, y: 200 },
-      { x: 0, y: 200 },
+      { x: 4000, y: 0 },
+      { x: 4000, y: 4000 },
+      { x: 0, y: 4000 },
     ];
 
     for (const corner of cornerRegions) {
       const nearCorner = path.some(
-        (point) => Math.hypot(point.x - corner.x, point.y - corner.y) < 40,
+        (point) => Math.hypot(point.x - corner.x, point.y - corner.y) < 800,
       );
       expect(nearCorner).toBe(false);
     }
@@ -97,4 +97,3 @@ describe('generateSerpentine – non-rectangular zones (contour parallel)', () =
     expect(end.y).toBeGreaterThan(1500);
   });
 });
-

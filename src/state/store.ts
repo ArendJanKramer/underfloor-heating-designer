@@ -853,7 +853,7 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
     });
   },
 
-  cancelDrawing: () => set({ drawingPoints: [], toolMode: 'select' }),
+  cancelDrawing: () => set({ drawingPoints: [], drawRectStart: null, toolMode: 'select' }),
 
   startDrawRect: (pt) => set({ drawRectStart: pt }),
 
@@ -1196,7 +1196,16 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
 
   clearMeasurement: () => set({ measurement: { start: null, end: null } }),
 
-  startCalibration: () => set({ calibration: { active: true, point1: null, point2: null } }),
+  startCalibration: () =>
+    set({
+      calibration: { active: true, point1: null, point2: null },
+      // Calibration owns the next two canvas clicks. Clear any drawing mode so those
+      // clicks cannot accidentally become polygon vertices instead.
+      toolMode: 'select',
+      drawingPoints: [],
+      drawRectStart: null,
+      routing: null,
+    }),
 
   addCalibrationPoint: (pt) => {
     const { calibration } = get();

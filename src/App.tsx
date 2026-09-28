@@ -7,9 +7,12 @@ import './App.css';
 
 export default function App() {
   const toolMode = useStore((state) => state.toolMode);
+  const calibrationActive = useStore((state) => state.calibration.active);
+  const measurementActive = useStore((state) => state.measurement.start !== null);
   const closeZone = useStore((state) => state.closeZone);
   const cancelDrawing = useStore((state) => state.cancelDrawing);
   const cancelRouting = useStore((state) => state.cancelRouting);
+  const cancelCalibration = useStore((state) => state.cancelCalibration);
   const clearMeasurement = useStore((state) => state.clearMeasurement);
 
   const handleKeyDown = useCallback(
@@ -19,17 +22,27 @@ export default function App() {
       }
 
       if (event.key === 'Escape') {
-        // A tape can be left on screen as a reference while working in another tool, so
-        // Escape drops it whatever mode you're in, not only while measuring.
-        clearMeasurement();
-        if (toolMode === 'routeLeader') {
+        if (calibrationActive) {
+          event.preventDefault();
+          cancelCalibration();
+        } else if (toolMode === 'routeLeader') {
+          event.preventDefault();
           cancelRouting();
-        } else {
           cancelDrawing();
+        } else if (toolMode === 'measure') {
+          event.preventDefault();
+          clearMeasurement();
+          cancelDrawing();
+        } else if (toolMode !== 'select') {
+          event.preventDefault();
+          cancelDrawing();
+        } else if (measurementActive) {
+          event.preventDefault();
+          clearMeasurement();
         }
       }
     },
-    [cancelDrawing, cancelRouting, clearMeasurement, closeZone, toolMode],
+    [calibrationActive, cancelCalibration, cancelDrawing, cancelRouting, clearMeasurement, closeZone, measurementActive, toolMode],
   );
 
   useEffect(() => {
