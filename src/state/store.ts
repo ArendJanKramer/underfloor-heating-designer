@@ -159,11 +159,7 @@ interface StoreState {
    * it. The drawn waypoints stay put — only the derived approach re-aims.
    */
   slideZoneManifoldPort: (zoneId: string, pt: Point) => void;
-  /**
-   * Resize the imported floor plan by `factor`, holding `anchor` still — what calibration
-   * does once it learns the plan came in at the wrong size. Nothing else in the drawing
-   * moves: zones and the manifold are authored in real millimetres and are already right.
-   */
+  /** Resize the plan and traced geometry about the measured calibration point. */
   rescaleBackground: (factor: number, anchor: Point) => void;
   setMaxCircuitLength: (m: number) => void;
   setDefaultSpacing: (mm: number) => void;
@@ -1158,20 +1154,30 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
 
   rescaleBackground: (factor, anchor) => {
     if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return;
-    const { background } = get();
+    const { background, zones, manifold } = get();
     if (!background) return;
 
-    /*
-     * Only the plan resizes. Zones, the manifold and every routed leader are authored in
-     * real millimetres — a room drawn 4 000 mm wide is 4 000 mm wide — so they are already
-     * correct and must not be touched. What calibration discovers is that the *imported
-     * plan* came in at the wrong size, and that is the one thing it corrects.
-     *
-     * The scaling is anchored on the first point clicked, so the feature the user
-     * measured from stays under the cursor and the plan grows or shrinks away from it,
-     * rather than sliding off as it would if it scaled about the drawing origin.
-     */
-    set({ background: scaleBackgroundAbout(background, factor, anchor) });
+    // The zone boundaries and routed paths were traced on the plan at its old scale.
+    // Keep them on the same features when the scale changes. Pipe spacing and padding
+    // are physical measurements, so they retain their values in millimetres.
+    const about = (point: Point): Point => ({
+      x: anchor.x + (point.x - anchor.x) * factor,
+      y: anchor.y + (point.y - anchor.y) * factor,
+    });
+    const scaledManifold = manifold ? { ...manifold, position: about(manifold.position) } : null;
+    const scaledZones = zones.map((zone) => ({
+      ...zone,
+      polygon: { points: zone.polygon.points.map(about) },
+      leaderWaypoints: zone.leaderWaypoints?.map(about) ?? null,
+      manifoldPortOffsetMm: zone.manifoldPortOffsetMm === null
+        ? null
+        : zone.manifoldPortOffsetMm * factor,
+    }));
+    set({
+      background: scaleBackgroundAbout(background, factor, anchor),
+      manifold: scaledManifold,
+      zones: recomputeZones(scaledZones, scaledManifold),
+    });
   },
 
   setMaxCircuitLength: (m) => set({ maxCircuitLengthM: m }),

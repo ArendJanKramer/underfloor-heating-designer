@@ -291,8 +291,8 @@ export default function SidePanel() {
                     <section className="panel-section">
                         <h2><Ruler /> Scale Calibration</h2>
                         <p className="info">
-                            Calibrating resizes the imported plan to its real scale. Measure two
-                            points on the plan and enter their real distance in metres.
+                            Calibrating resizes the plan and zones traced on it to their real scale.
+                            Measure two points on the plan and enter their real distance in metres.
                         </p>
                         {!background && (
                             <p className="info">Import a floor plan first — there is nothing to calibrate.</p>
