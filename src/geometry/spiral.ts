@@ -1,6 +1,7 @@
 import { Point, PipePath, Polygon } from '../types';
 import { PIPE_BEND_RADIUS_MM } from '../pipeSpec';
-import { offsetPolygon, signedArea } from './offset';
+import ClipperLib from 'clipper-lib';
+import { ensureCCW, signedArea } from './offset';
 
 type ManifoldSide = 'top' | 'right' | 'bottom' | 'left';
 
@@ -192,47 +193,173 @@ function polygonColumnIntervals(polygon: Polygon, x: number): [number, number][]
     return intervals;
 }
 
-/**
- * Fill a polygon with a continuous back-and-forth path when its walls are genuinely
- * diagonal. The full counter-flow ring generator relies on rectilinear edges; this
- * scanline fallback gives free-form polygon zones a useful serpentine without routing
- * through the polygon's bounding-box corners or outside a sloped wall.
- */
-function generatePolygonScanlineSerpentine(
-    polygon: Polygon,
+/** A ring opened at one vertex; the two cut sides form a corridor for the spiral turns. */
+function openContourRing(
+    ring: Point[],
+    cutIndex: number,
     spacing: number,
+    fromSide: 'a' | 'b',
 ): PipePath {
-    const xs = polygon.points.map(point => point.x);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const passes: Array<{ x: number; minY: number; maxY: number }> = [];
-
-    for (let x = minX + spacing / 2; x <= maxX - spacing / 2 + EPSILON; x += spacing) {
-        const intervals = polygonColumnIntervals(polygon, x)
-            .filter(([minY, maxY]) => maxY - minY >= spacing - EPSILON)
-            .sort((a, b) => b[1] - b[0] - (a[1] - a[0]));
-        const interval = intervals[0];
-        if (interval) passes.push({ x, minY: interval[0], maxY: interval[1] });
+    const n = ring.length;
+    const cut = ring[cutIndex];
+    const prev = ring[(cutIndex - 1 + n) % n];
+    const next = ring[(cutIndex + 1) % n];
+    const cutPoint = (neighbor: Point): Point => {
+        const length = Math.hypot(neighbor.x - cut.x, neighbor.y - cut.y);
+        const fraction = Math.min(spacing * 0.75 / length, 0.35);
+        return {
+            x: cut.x + (neighbor.x - cut.x) * fraction,
+            y: cut.y + (neighbor.y - cut.y) * fraction,
+        };
+    };
+    const a = cutPoint(prev);
+    const b = cutPoint(next);
+    const result: PipePath = [fromSide === 'a' ? a : b];
+    for (let step = 1; step < n; step++) {
+        result.push(ring[(cutIndex + (fromSide === 'a' ? -step : step) + n) % n]);
     }
+    result.push(fromSide === 'a' ? b : a);
+    return result;
+}
 
-    // An even number starts and ends on the manifold-facing (bottom) side.
-    if (passes.length % 2 === 1) passes.pop();
-    if (passes.length < 2) return [];
-
-    const path: PipePath = [];
-    for (let index = 0; index < passes.length; index++) {
-        const pass = passes[index];
-        const from = index % 2 === 0
-            ? { x: pass.x, y: pass.maxY }
-            : { x: pass.x, y: pass.minY };
-        const to = index % 2 === 0
-            ? { x: pass.x, y: pass.minY }
-            : { x: pass.x, y: pass.maxY };
-        pushUnique(path, from);
-        pushUnique(path, to);
+function contourSelfIntersects(points: Point[]): boolean {
+    const cross = (a: Point, b: Point, c: Point) =>
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    for (let i = 0; i < points.length; i++) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        for (let j = i + 2; j < points.length; j++) {
+            if (i === 0 && j === points.length - 1) continue;
+            const c = points[j];
+            const d = points[(j + 1) % points.length];
+            if (cross(a, b, c) * cross(a, b, d) < -EPSILON &&
+                cross(c, d, a) * cross(c, d, b) < -EPSILON) return true;
+        }
     }
+    return false;
+}
 
-    return path;
+function pointInsidePolygon(point: Point, polygon: Point[]): boolean {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const a = polygon[i];
+        const b = polygon[j];
+        if ((a.y > point.y) !== (b.y > point.y) &&
+            point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+function contourStaysInside(inner: Point[], outer: Point[]): boolean {
+    return inner.every((point, index) => {
+        const next = inner[(index + 1) % inner.length];
+        return [0, 0.25, 0.5, 0.75].every(fraction => pointInsidePolygon({
+            x: point.x + (next.x - point.x) * fraction,
+            y: point.y + (next.y - point.y) * fraction,
+        }, outer));
+    });
+}
+
+function contourPathIsValid(path: PipePath, polygon: Point[]): boolean {
+    const cross = (a: Point, b: Point, c: Point) =>
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    for (let i = 1; i < path.length; i++) {
+        const a = path[i - 1];
+        const b = path[i];
+        if (![0, 0.25, 0.5, 0.75, 1].every(fraction => pointInsidePolygon({
+            x: a.x + (b.x - a.x) * fraction,
+            y: a.y + (b.y - a.y) * fraction,
+        }, polygon))) return false;
+        for (let edge = 0; edge < polygon.length; edge++) {
+            const c = polygon[edge];
+            const d = polygon[(edge + 1) % polygon.length];
+            if (cross(a, b, c) * cross(a, b, d) < -EPSILON &&
+                cross(c, d, a) * cross(c, d, b) < -EPSILON) return false;
+        }
+        for (let j = i + 2; j < path.length; j++) {
+            const c = path[j - 1];
+            const d = path[j];
+            if (cross(a, b, c) * cross(a, b, d) < -EPSILON &&
+                cross(c, d, a) * cross(c, d, b) < -EPSILON) return false;
+        }
+    }
+    return true;
+}
+
+/** Offset the complete outline, resolving the loops that form at concave corners. */
+function insetPolygonContours(polygon: Polygon, distance: number): Point[][] {
+    const scale = 1000;
+    const offset = new ClipperLib.ClipperOffset(2, 0.25 * scale);
+    offset.AddPath(
+        polygon.points.map(point => ({
+            X: Math.round(point.x * scale),
+            Y: Math.round(point.y * scale),
+        })),
+        ClipperLib.JoinType.jtMiter,
+        ClipperLib.EndType.etClosedPolygon,
+    );
+    const result = new ClipperLib.Paths();
+    offset.Execute(result, -distance * scale);
+    return result.map(path => ensureCCW(path.map(point => ({
+        x: point.X / scale,
+        y: point.Y / scale,
+    }))));
+}
+
+/** Inward contours joined at an opening, with a return through that opening. */
+function generatePolygonContourSerpentine(polygon: Polygon, spacing: number): PipePath {
+    if (contourSelfIntersects(polygon.points)) return [];
+    const rings: Point[][] = [];
+    let previousArea = Math.abs(signedArea(polygon.points));
+    for (let index = 0; index < 200; index++) {
+        const insets = insetPolygonContours(polygon, spacing * (index + 0.5));
+        // Once a neck closes, the remaining pockets need separate pipe circuits.
+        if (insets.length !== 1) break;
+        const inset = insets[0];
+        const area = Math.abs(signedArea(inset));
+        if (area >= previousArea - EPSILON || area < spacing * spacing ||
+            contourSelfIntersects(inset) ||
+            !contourStaysInside(inset, rings[rings.length - 1] ?? polygon.points)) break;
+        rings.push(inset);
+        previousArea = area;
+    }
+    if (rings.length === 0) return [];
+
+    // Either bottom corner can be the opening. In a concave room one lobe may
+    // collapse sooner, so choose the side that reaches the deepest valid contour.
+    const cuts = [true, false].map(right => rings.map(ring => ring.reduce(
+        (chosen, point, index, points) =>
+            point.y > points[chosen].y + EPSILON ||
+            (Math.abs(point.y - points[chosen].y) < EPSILON &&
+                (right ? point.x > points[chosen].x : point.x < points[chosen].x))
+                ? index : chosen,
+        0,
+    )));
+    const buildPath = (count: number, cutIndices: number[]): PipePath => {
+        const path: PipePath = [];
+        for (let index = 0; index < count; index++) {
+            const fromSide = index % 2 === 0 ? 'a' : 'b';
+            for (const point of openContourRing(rings[index], cutIndices[index], spacing, fromSide)) {
+                pushUnique(path, point);
+            }
+        }
+        for (let index = count - 1; index >= 0; index--) {
+            pushUnique(path, rings[index][cutIndices[index]]);
+        }
+        return path;
+    };
+
+    // A deep contour may move its opening across a concave neck. Keep the
+    // deepest prefix whose connecting and return segments remain usable.
+    for (let count = rings.length; count > 0; count--) {
+        for (const cutIndices of cuts) {
+            const path = buildPath(count, cutIndices);
+            if (contourPathIsValid(path, polygon.points)) return path;
+        }
+    }
+    return [];
 }
 
 /**
@@ -2205,22 +2332,10 @@ function getClosestManifoldSide(
  * - winds outward through the intermediate lanes;
  * - ends beside the starting connection.
  *
- * The spiral is generated ring-by-ring against the polygon's actual shape
- * (not just its bounding box), so it conforms to concave zones, notches,
- * and non-rectangular rooms. Every straight run stays purely horizontal or
- * vertical - conforming is done by shortening/lengthening individual rings
- * per row/column, never by cutting a run at an angle. Known limitations:
- * - the short stub connecting the outermost ring to the manifold edge is
- *   not clamped, since it's assumed to sit on the polygon boundary already;
- * - the center turn is checked against the polygon rather than clamped to it: where it
- *   won't fit the spiral stops winding sooner, and only if no amount of that helps is a
- *   turn that overshoots the outline drawn anyway;
- * - `paddingMm` insets the bounding rectangle but does not inset the
- *   polygon's own (possibly concave) edges;
- * - where a single scanline crosses the polygon in more than one place
- *   (an hourglass-shaped room, for instance), only the interval closest to
- *   the already-established edge is used, so isolated pockets are skipped
- *   rather than routed through separately.
+ * Rectilinear zones use the established orthogonal counter-flow generator.
+ * Freeform zones use inset contours of their actual outline, including diagonal
+ * edges. The contour route stops before an inset collapses or crosses itself;
+ * a single route cannot fill disconnected pockets after a concave zone splits.
  *
  * When `mirror` is set, the spiral is reflected along the manifold edge. The
  * two open ends stay on the same edge but move to the opposite end of it, which
@@ -2254,12 +2369,8 @@ export function generateSerpentine(
         ? cleanRectilinearPolygon(snappedPoints)
         : null;
 
-    /*
-     * The boundary-following generator prefers a clean rectilinear polygon, but the
-     * scanline fallback below is deliberately able to follow diagonal walls. Previously
-     * this early validation returned an empty path before that fallback could run, so any
-     * genuinely free-form polygon silently rendered no pipe at all.
-     */
+    // Preserve true diagonal edges for the contour generator. Only small drawing
+    // errors near horizontal or vertical edges are snapped to rectilinear.
     const cleanedPoints = rectilinearPoints ?? polygon.points.filter((point, index, points) => {
         const previous = points[(index - 1 + points.length) % points.length];
         return !samePoint(point, previous);
@@ -2299,13 +2410,17 @@ export function generateSerpentine(
      * Do not use the non-null assertion here: narrow arms can legitimately
      * collapse when padding is too large.
      */
-    const paddedPoints = paddingMm > EPSILON
-        ? rectilinearPoints
-            ? offsetRectilinearPolygon(rectilinearPoints, paddingMm)
-            : offsetPolygon({ points: cleanedPoints }, paddingMm)?.points ?? null
-        : cleanedPoints;
+    let paddedPoints: Point[] | null = cleanedPoints;
+    if (paddingMm > EPSILON) {
+        if (rectilinearPoints) {
+            paddedPoints = offsetRectilinearPolygon(rectilinearPoints, paddingMm);
+        } else {
+            const contours = insetPolygonContours({ points: cleanedPoints }, paddingMm);
+            paddedPoints = contours.length === 1 ? contours[0] : null;
+        }
+    }
 
-    if (!paddedPoints || paddedPoints.length < 4) {
+    if (!paddedPoints || paddedPoints.length < 3) {
         return [];
     }
 
@@ -2372,7 +2487,7 @@ export function generateSerpentine(
             spacingMm,
             canonicalPolygon,
         )
-        : generatePolygonScanlineSerpentine(canonicalPolygon, spacingMm);
+        : generatePolygonContourSerpentine(canonicalPolygon, spacingMm);
 
     return canonicalPath.map(point => {
         const canonicalPoint = mirror

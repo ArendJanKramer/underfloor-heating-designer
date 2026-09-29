@@ -31,3 +31,21 @@ export function resizeRectFromCorner(points: Point[], draggedIndex: number, newP
 
   return result;
 }
+
+/** Project a dragged corner onto the rectangle's original diagonal to keep its aspect ratio. */
+export function constrainRectCornerToAspect(
+  points: Point[],
+  draggedIndex: number,
+  pointer: Point,
+): Point {
+  const opposite = points[(draggedIndex + 2) % 4];
+  const original = points[draggedIndex];
+  const dx = original.x - opposite.x;
+  const dy = original.y - opposite.y;
+  const diagonalSquared = dx * dx + dy * dy;
+  if (Math.abs(dx) < RECT_EPSILON || Math.abs(dy) < RECT_EPSILON) return pointer;
+
+  const scale = ((pointer.x - opposite.x) * dx + (pointer.y - opposite.y) * dy)
+    / diagonalSquared;
+  return { x: opposite.x + dx * scale, y: opposite.y + dy * scale };
+}

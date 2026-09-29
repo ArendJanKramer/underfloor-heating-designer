@@ -125,6 +125,8 @@ interface StoreState {
   updateZoneStartDirection: (id: string, direction: SpiralStartDirection) => void;
   updateZoneName: (id: string, name: string) => void;
   updateZoneVertex: (zoneId: string, vertexIdx: number, pt: Point) => void;
+  updateZonePolygon: (zoneId: string, points: Point[]) => void;
+  moveZone: (zoneId: string, delta: Point) => void;
   /** Begin (or restart) manual leader routing for a zone. */
   startRouteZone: (zoneId: string) => void;
   /** Add a click to the in-progress leader path; finishes routing automatically if the click lands on the manifold. */
@@ -587,6 +589,29 @@ function recomputeSpiral(
   };
 }
 
+/** Rebuild an edited boundary and preserve a nearby leader route when its anchor barely moves. */
+function withUpdatedZonePolygon(zone: Zone, points: Point[], manifold: Manifold | null): Zone {
+  const previousStubs = zone.spiral ? getSpiralStubs(zone.spiral) : null;
+  const recomputed = recomputeSpiral({ ...zone, polygon: { points } }, manifold, {
+    preserveLeaderRouting: true,
+  });
+
+  if (!zone.leaderWaypoints || !previousStubs || !recomputed.spiral || !manifold) {
+    return clearZoneLeaderRouting(recomputed);
+  }
+
+  const newStubs = getSpiralStubs(recomputed.spiral);
+  const anchorShiftMm = newStubs
+    ? distanceMm(midpoint(previousStubs.start, previousStubs.end), midpoint(newStubs.start, newStubs.end))
+    : Infinity;
+
+  if (anchorShiftMm > ZONE_RESIZE_ROUTING_TOLERANCE_MM) {
+    return clearZoneLeaderRouting(recomputed);
+  }
+
+  return withLeaderWaypoints(recomputed, manifold, zone.leaderWaypoints, true) ?? recomputed;
+}
+
 /** Build a rectangular polygon from two opposite corners */
 function rectPolygon(a: Point, b: Point) {
   return {
@@ -971,6 +996,17 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
       zones: state.zones.map((zone) => (zone.id === id ? { ...zone, name } : zone)),
     })),
 
+  moveZone: (zoneId, delta) => set((state) => ({
+    zones: state.zones.map((zone) => {
+      if (zone.id !== zoneId) return zone;
+      const points = zone.polygon.points.map((point) => ({
+        x: point.x + delta.x,
+        y: point.y + delta.y,
+      }));
+      return recomputeSpiral({ ...zone, polygon: { points } }, state.manifold);
+    }),
+  })),
+
   updateZoneVertex: (zoneId, vertexIdx, pt) => {
     const { zones, manifold } = get();
     const updated = zones.map((zone) => {
@@ -984,33 +1020,16 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
         points[vertexIdx] = pt;
       }
 
-      const previousStubs = zone.spiral ? getSpiralStubs(zone.spiral) : null;
-      const recomputed = recomputeSpiral({ ...zone, polygon: { points } }, manifold, {
-        preserveLeaderRouting: true,
-      });
-
-      if (!zone.leaderWaypoints || !previousStubs || !recomputed.spiral || !manifold) {
-        // Nothing routed yet, or no spiral/manifold to compare against — nothing to preserve.
-        return { ...recomputed, leaderWaypoints: null, manifoldPortOffsetMm: null, leaderLengthMm: 0 };
-      }
-
-      const newStubs = getSpiralStubs(recomputed.spiral);
-      const anchorShiftMm = newStubs
-        ? distanceMm(midpoint(previousStubs.start, previousStubs.end), midpoint(newStubs.start, newStubs.end))
-        : Infinity;
-
-      if (anchorShiftMm > ZONE_RESIZE_ROUTING_TOLERANCE_MM) {
-        // The connection point moved enough that the old routing no longer makes sense.
-        return { ...recomputed, leaderWaypoints: null, manifoldPortOffsetMm: null, leaderLengthMm: 0 };
-      }
-
-      // Barely moved — keep the routing, just repair the first segment against the new anchor.
-      return (
-        withLeaderWaypoints(recomputed, manifold, zone.leaderWaypoints, true) ?? recomputed
-      );
+      return withUpdatedZonePolygon(zone, points, manifold);
     });
     set({ zones: updated });
   },
+
+  updateZonePolygon: (zoneId, points) => set((state) => ({
+    zones: state.zones.map((zone) =>
+      zone.id === zoneId ? withUpdatedZonePolygon(zone, points, state.manifold) : zone,
+    ),
+  })),
 
   startRouteZone: (zoneId) => {
     const zone = get().zones.find((candidate) => candidate.id === zoneId);
