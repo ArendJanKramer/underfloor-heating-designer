@@ -1,5 +1,6 @@
 import { Point, PipePath, Polygon } from '../types';
 import { PIPE_BEND_RADIUS_MM } from '../pipeSpec';
+import { offsetPolygon, signedArea } from './offset';
 
 type ManifoldSide = 'top' | 'right' | 'bottom' | 'left';
 
@@ -189,6 +190,49 @@ function polygonColumnIntervals(polygon: Polygon, x: number): [number, number][]
     }
 
     return intervals;
+}
+
+/**
+ * Fill a polygon with a continuous back-and-forth path when its walls are genuinely
+ * diagonal. The full counter-flow ring generator relies on rectilinear edges; this
+ * scanline fallback gives free-form polygon zones a useful serpentine without routing
+ * through the polygon's bounding-box corners or outside a sloped wall.
+ */
+function generatePolygonScanlineSerpentine(
+    polygon: Polygon,
+    spacing: number,
+): PipePath {
+    const xs = polygon.points.map(point => point.x);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const passes: Array<{ x: number; minY: number; maxY: number }> = [];
+
+    for (let x = minX + spacing / 2; x <= maxX - spacing / 2 + EPSILON; x += spacing) {
+        const intervals = polygonColumnIntervals(polygon, x)
+            .filter(([minY, maxY]) => maxY - minY >= spacing - EPSILON)
+            .sort((a, b) => b[1] - b[0] - (a[1] - a[0]));
+        const interval = intervals[0];
+        if (interval) passes.push({ x, minY: interval[0], maxY: interval[1] });
+    }
+
+    // An even number starts and ends on the manifold-facing (bottom) side.
+    if (passes.length % 2 === 1) passes.pop();
+    if (passes.length < 2) return [];
+
+    const path: PipePath = [];
+    for (let index = 0; index < passes.length; index++) {
+        const pass = passes[index];
+        const from = index % 2 === 0
+            ? { x: pass.x, y: pass.maxY }
+            : { x: pass.x, y: pass.minY };
+        const to = index % 2 === 0
+            ? { x: pass.x, y: pass.minY }
+            : { x: pass.x, y: pass.maxY };
+        pushUnique(path, from);
+        pushUnique(path, to);
+    }
+
+    return path;
 }
 
 /**
@@ -522,14 +566,14 @@ function traceRingFromSeam(
 
     if (aIsTop) {
         let i = seamIndex;
-        while (true) {
+        for (;;) {
             path.push(points[i]);
             if (i === (seamIndex + 1) % n) break;
             i = (i - 1 + n) % n;
         }
     } else {
         let i = (seamIndex + 1) % n;
-        while (true) {
+        for (;;) {
             path.push(points[i]);
             if (i === seamIndex) break;
             i = (i + 1) % n;
@@ -564,7 +608,7 @@ function buildBoundaryFollowingLane(
     // Open end at the manifold edge.
     path.push({ x: trace.seamTop.x, y: height });
 
-    while (true) {
+    for (;;) {
         /*
          * Don't let this ring's trace close all the way back to its own
          * seam - the incoming bridge already occupies that line, so
@@ -1100,7 +1144,7 @@ function computeSpiralFrames(
     const initialTop = top;
     const frames: RingFrame[] = [];
 
-    while (true) {
+    for (;;) {
         /*
          * Across the top. Clamp how far right this edge can reach without
          * leaving the polygon, anchored at the already-valid left edge.
@@ -2202,20 +2246,26 @@ export function generateSerpentine(
 
     const snapTolerance = POLYGON_SNAP_TOLERANCE_MM;
 
-    const snappedPoints =
-        snapManuallyDrawnRectilinearPolygon(
-            polygon.points,
-            snapTolerance,
-        );
+    const snappedPoints = snapManuallyDrawnRectilinearPolygon(
+        polygon.points,
+        snapTolerance,
+    );
+    const rectilinearPoints = snappedPoints
+        ? cleanRectilinearPolygon(snappedPoints)
+        : null;
 
-    if (!snappedPoints) {
-        return [];
-    }
+    /*
+     * The boundary-following generator prefers a clean rectilinear polygon, but the
+     * scanline fallback below is deliberately able to follow diagonal walls. Previously
+     * this early validation returned an empty path before that fallback could run, so any
+     * genuinely free-form polygon silently rendered no pipe at all.
+     */
+    const cleanedPoints = rectilinearPoints ?? polygon.points.filter((point, index, points) => {
+        const previous = points[(index - 1 + points.length) % points.length];
+        return !samePoint(point, previous);
+    });
 
-    const cleanedPoints =
-        cleanRectilinearPolygon(snappedPoints);
-
-    if (!cleanedPoints) {
+    if (cleanedPoints.length < 3 || Math.abs(signedArea(cleanedPoints)) < EPSILON) {
         return [];
     }
     
@@ -2249,13 +2299,11 @@ export function generateSerpentine(
      * Do not use the non-null assertion here: narrow arms can legitimately
      * collapse when padding is too large.
      */
-    const paddedPoints =
-        paddingMm > EPSILON
-            ? offsetRectilinearPolygon(
-                cleanedPoints,
-                paddingMm,
-            )
-            : cleanedPoints;
+    const paddedPoints = paddingMm > EPSILON
+        ? rectilinearPoints
+            ? offsetRectilinearPolygon(rectilinearPoints, paddingMm)
+            : offsetPolygon({ points: cleanedPoints }, paddingMm)?.points ?? null
+        : cleanedPoints;
 
     if (!paddedPoints || paddedPoints.length < 4) {
         return [];
@@ -2317,13 +2365,14 @@ export function generateSerpentine(
         }),
     };
 
-    const canonicalPath =
-        generateCanonicalSpiral(
+    const canonicalPath = rectilinearPoints
+        ? generateCanonicalSpiral(
             canonicalWidth,
             canonicalHeight,
             spacingMm,
             canonicalPolygon,
-        );
+        )
+        : generatePolygonScanlineSerpentine(canonicalPolygon, spacingMm);
 
     return canonicalPath.map(point => {
         const canonicalPoint = mirror

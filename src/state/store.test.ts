@@ -325,7 +325,61 @@ describe('useStore persistence', () => {
     expect(store.getState().zones[0].manifoldPortOffsetMm).toBe(routed.manifoldPortOffsetMm);
   });
 
-  it('calibrates the imported plan without touching the design', () => {
+  it('removes one leader route without changing other zones', () => {
+    const store = createUfhStore();
+    const routed = { ...persistedZone, leaderWaypoints: [], manifoldPortOffsetMm: 100, leaderLengthMm: 1200 };
+    const other = { ...routed, id: 'zone-2', name: 'Zone 2' };
+    store.setState({ zones: [routed, other], routing: { zoneId: routed.id, points: [] } });
+
+    store.getState().removeZoneLeaderRoute(routed.id);
+
+    expect(store.getState().zones[0]).toMatchObject({
+      leaderWaypoints: null,
+      manifoldPortOffsetMm: null,
+      leaderLengthMm: 0,
+    });
+    expect(store.getState().zones[1]).toEqual(other);
+    expect(store.getState().routing).toBeNull();
+  });
+
+  it('can clear all routes or remove the manifold without deleting zone spirals', () => {
+    const store = createUfhStore();
+    store.setState({
+      manifold: { position: { x: 5000, y: 1000 }, rotationDeg: 0 },
+      zones: [persistedZone],
+    });
+    store.getState().recomputeZoneSpiral(persistedZone.id);
+    store.getState().startRouteZone(persistedZone.id);
+    store.getState().addRoutePoint({ x: 3000, y: 1900 });
+    store.getState().finishRouting({ x: 5000, y: 1000 });
+    const spiral = store.getState().zones[0].spiral;
+    expect(store.getState().zones[0].leaderWaypoints).not.toBeNull();
+
+    store.getState().removeAllLeaderRoutes();
+    expect(store.getState().manifold).not.toBeNull();
+    expect(store.getState().zones[0]).toMatchObject({
+      spiral,
+      leaderWaypoints: null,
+      manifoldPortOffsetMm: null,
+      leaderLengthMm: 0,
+    });
+
+    store.getState().startRouteZone(persistedZone.id);
+    store.getState().finishRouting({ x: 5000, y: 1000 });
+    store.getState().setToolMode('routeLeader');
+    store.getState().removeManifold();
+    expect(store.getState().manifold).toBeNull();
+    expect(store.getState().toolMode).toBe('select');
+    expect(store.getState().routing).toBeNull();
+    expect(store.getState().zones[0]).toMatchObject({
+      spiral,
+      leaderWaypoints: null,
+      manifoldPortOffsetMm: null,
+      leaderLengthMm: 0,
+    });
+  });
+
+  it('calibrates the plan and existing design together, then recomputes pipe lengths', () => {
     const store = createUfhStore();
     const manifold = { position: { x: 5000, y: 1000 }, rotationDeg: 90 };
 
@@ -345,30 +399,87 @@ describe('useStore persistence', () => {
 
     // The user clicks a span the plan draws as 2 000 mm and says it is really 2 500.
     store.getState().startCalibration();
-    store.getState().addCalibrationPoint({ x: 0, y: 0 });
-    store.getState().addCalibrationPoint({ x: 2000, y: 0 });
+    const anchor = { x: 500, y: 500 };
+    store.getState().addCalibrationPoint(anchor);
+    store.getState().addCalibrationPoint({ x: 2500, y: 500 });
     store.getState().finishCalibration(2500);
 
     const factor = 1.25;
     const state = store.getState();
+    const scalePoint = ({ x, y }: { x: number; y: number }) => ({
+      x: anchor.x + (x - anchor.x) * factor,
+      y: anchor.y + (y - anchor.y) * factor,
+    });
 
     // The plan resizes about the first clicked point...
     expect(state.background).toMatchObject({
-      x: 100 * factor,
-      y: 200 * factor,
+      x: scalePoint({ x: 100, y: 200 }).x,
+      y: scalePoint({ x: 100, y: 200 }).y,
       mmPerPixel: 5 * factor,
     });
 
-    // ...and nothing else does. Zones are authored in real millimetres already.
-    expect(state.zones[0].polygon.points).toEqual(persistedZone.polygon.points);
+    // A zone traced on the plan must keep matching the same room after calibration.
+    expect(state.zones[0].polygon.points).toEqual(
+      persistedZone.polygon.points.map(scalePoint),
+    );
     expect(state.zones[0].spacingMm).toBe(persistedZone.spacingMm);
-    expect(state.zones[0].spiralLengthMm).toBe(before.spiralLengthMm);
-    expect(state.zones[0].leaderWaypoints).toEqual(before.leaderWaypoints);
-    expect(state.zones[0].manifoldPortOffsetMm).toBe(before.manifoldPortOffsetMm);
-    expect(state.manifold).toEqual(manifold);
+    expect(state.zones[0].spiralLengthMm).not.toBe(before.spiralLengthMm);
+    expect(state.zones[0].leaderWaypoints).toEqual(
+      before.leaderWaypoints?.map(scalePoint),
+    );
+    expect(state.zones[0].manifoldPortOffsetMm).toBe(
+      (before.manifoldPortOffsetMm ?? 0) * factor,
+    );
+    expect(state.zones[0].leaderLengthMm).not.toBe(before.leaderLengthMm);
+    expect(state.manifold).toEqual({ ...manifold, position: scalePoint(manifold.position) });
     // The view is left alone too — the plan visibly changes size, which is the point.
     expect(state.pxPerMm).toBe(DEFAULT_PX_PER_MM);
     expect(state.calibration.active).toBe(false);
+  });
+
+  it('corrects a long loop traced at the imported image scale', () => {
+    const store = createUfhStore();
+    store.setState({
+      background: { ...persistedImageBackground, x: 0, y: 0, mmPerPixel: 10 },
+      zones: [{
+        ...persistedZone,
+        polygon: {
+          points: [
+            { x: 0, y: 0 },
+            { x: 5000, y: 0 },
+            { x: 5000, y: 3400 },
+            { x: 0, y: 3400 },
+          ],
+        },
+      }],
+    });
+    store.getState().recomputeZoneSpiral(persistedZone.id);
+    const before = store.getState().zones[0];
+    expect(before.spiralLengthMm).toBeGreaterThan(90_000);
+
+    store.getState().startCalibration();
+    store.getState().addCalibrationPoint({ x: 0, y: 0 });
+    store.getState().addCalibrationPoint({ x: 2000, y: 0 });
+    store.getState().finishCalibration(1000);
+
+    const after = store.getState().zones[0];
+    expect(after.areaMm2).toBe(before.areaMm2 / 4);
+    expect(after.spiralLengthMm).toBeLessThan(60_000);
+  });
+
+  it('gives calibration clicks priority over an unfinished polygon', () => {
+    const store = createUfhStore();
+    store.setState({
+      background: persistedImageBackground,
+      toolMode: 'drawZone',
+      drawingPoints: [{ x: 100, y: 100 }],
+    });
+
+    store.getState().startCalibration();
+
+    expect(store.getState().toolMode).toBe('select');
+    expect(store.getState().drawingPoints).toEqual([]);
+    expect(store.getState().calibration).toEqual({ active: true, point1: null, point2: null });
   });
 
   it('holds the first calibration point still while the plan resizes around it', () => {

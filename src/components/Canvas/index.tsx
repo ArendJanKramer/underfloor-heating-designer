@@ -38,6 +38,8 @@ export default function Canvas() {
   // Where the pointer was on the last background-pan tick (world coords), so each move
   // applies only its own increment; null whenever no pan drag is in progress.
   const backgroundPanFromRef = useRef<{ x: number; y: number } | null>(null);
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [stageDragging, setStageDragging] = useState(false);
 
   const {
     background,
@@ -79,6 +81,48 @@ export default function Canvas() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]'))
+      ) return;
+      event.preventDefault();
+      backgroundPanFromRef.current = null;
+      setSpacePressed(true);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space') {
+        setSpacePressed(false);
+        setStageDragging(false);
+      }
+    };
+    const handleBlur = () => {
+      setSpacePressed(false);
+      setStageDragging(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  // While Space is held, let the Stage receive the pointer even over draggable shapes.
+  useEffect(() => {
+    if (!spacePressed) return;
+    const layers = stageRef.current?.getLayers() ?? [];
+    const listening = layers.map((layer) => layer.listening());
+    layers.forEach((layer) => layer.listening(false));
+    return () => layers.forEach((layer, index) => layer.listening(listening[index]));
+  }, [spacePressed]);
+
   // The view isn't part of the design, so a reloaded project arrives with no camera. Frame
   // whatever it contains once, on mount, rather than dropping the user at a fixed zoom
   // where a drawing measured in metres of millimetres could sit far off-screen.
@@ -105,6 +149,7 @@ export default function Canvas() {
   }, [pxPerMm, stageX, stageY]);
 
   const handleStageClick = useCallback(() => {
+    if (spacePressed) return;
     const position = getPointerPos();
     if (!position) return;
 
@@ -115,6 +160,7 @@ export default function Canvas() {
 
     if (toolMode === 'drawZone') {
       addDrawingPoint(position);
+      setMousePos(position);
       return;
     }
 
@@ -142,6 +188,7 @@ export default function Canvas() {
 
     if (calibration.active) {
       addCalibrationPoint(position);
+      setMousePos(position);
       return;
     }
 
@@ -165,29 +212,33 @@ export default function Canvas() {
     selectZone,
     setManifold,
     setToolMode,
+    spacePressed,
     startDrawRect,
     toolMode,
   ]);
 
   const handleStageDblClick = useCallback(() => {
+    if (spacePressed) return;
     if (toolMode === 'drawZone') {
       closeZone();
     }
-  }, [closeZone, toolMode]);
+  }, [closeZone, spacePressed, toolMode]);
 
   // Background panning is a press-drag-release on the stage itself rather than a draggable
   // Konva node: a DXF's thin lines are near-impossible to grab, so the whole canvas is the
   // handle. Deltas are taken in world coords, so a pan tracks the pointer at any zoom.
   const handleMouseDown = useCallback(() => {
+    if (spacePressed) return;
     if (toolMode !== 'panBackground' || !background) return;
     backgroundPanFromRef.current = getPointerPos();
-  }, [background, getPointerPos, toolMode]);
+  }, [background, getPointerPos, spacePressed, toolMode]);
 
   const endBackgroundPan = useCallback(() => {
     backgroundPanFromRef.current = null;
   }, []);
 
   const handleMouseMove = useCallback(() => {
+    if (spacePressed) return;
     const panFrom = backgroundPanFromRef.current;
     if (panFrom) {
       const pos = getPointerPos();
@@ -195,6 +246,14 @@ export default function Canvas() {
         moveBackground(pos.x - panFrom.x, pos.y - panFrom.y);
         backgroundPanFromRef.current = pos;
       }
+      return;
+    }
+    if (calibration.active && calibration.point1 && !calibration.point2) {
+      setMousePos(getPointerPos());
+      return;
+    }
+    if (toolMode === 'drawZone') {
+      setMousePos(getPointerPos());
       return;
     }
     if (toolMode === 'drawRect' && drawRectStart) {
@@ -212,7 +271,7 @@ export default function Canvas() {
       const pos = getPointerPos();
       if (pos) setMousePos(pos);
     }
-  }, [drawRectStart, getPointerPos, measurement, moveBackground, routing, toolMode]);
+  }, [calibration, drawRectStart, getPointerPos, measurement, moveBackground, routing, spacePressed, toolMode]);
 
   const handleWheel = useCallback(
     (event: Konva.KonvaEventObject<WheelEvent>) => {
@@ -241,9 +300,12 @@ export default function Canvas() {
   );
 
   const drawingFlatPoints = drawingPoints.flatMap((point) => [point.x, point.y]);
+  const lastDrawingPoint = drawingPoints[drawingPoints.length - 1];
+  const calibrationPreviewEnd = calibration.point2 ?? (!spacePressed ? mousePos : null);
 
-  const cursor =
-    calibration.active ||
+  const cursor = spacePressed
+    ? stageDragging ? 'grabbing' : 'grab'
+    : calibration.active ||
     toolMode === 'drawZone' ||
     toolMode === 'drawRect' ||
     toolMode === 'placeManifold' ||
@@ -313,18 +375,25 @@ export default function Canvas() {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={endBackgroundPan}
-      onMouseLeave={endBackgroundPan}
+      onMouseLeave={() => {
+        endBackgroundPan();
+        setMousePos(null);
+      }}
       onWheel={handleWheel}
-      draggable={toolMode === 'select' && !calibration.active}
+      draggable={spacePressed || (toolMode === 'select' && !calibration.active)}
       x={stageX}
       y={stageY}
       scaleX={pxPerMm}
       scaleY={pxPerMm}
+      onDragStart={(event) => {
+        if (event.target === stageRef.current) setStageDragging(true);
+      }}
       onDragEnd={(event) => {
         // Dragend bubbles up from any draggable descendant (vertex handles,
         // the manifold, ...) with event.target left as that node — only
         // react when the Stage itself was the thing being dragged (panning).
         if (event.target !== stageRef.current) return;
+        setStageDragging(false);
         setStageTransform(pxPerMm, event.target.x(), event.target.y());
       }}
       style={{ cursor, background: canvas.background }}
@@ -361,17 +430,30 @@ export default function Canvas() {
             <Line
               points={drawingFlatPoints}
               stroke={canvas.drawPreview}
-              strokeWidth={2}
-              dash={[5, 3]}
+              strokeWidth={3}
+              strokeScaleEnabled={false}
               listening={false}
             />
+            {mousePos && !spacePressed && (
+              <Line
+                points={[lastDrawingPoint.x, lastDrawingPoint.y, mousePos.x, mousePos.y]}
+                stroke={canvas.drawPreview}
+                strokeWidth={3}
+                strokeScaleEnabled={false}
+                dash={[8, 5]}
+                listening={false}
+              />
+            )}
             {drawingPoints.map((point, index) => (
               <Circle
                 key={index}
                 x={point.x}
                 y={point.y}
-                radius={4}
+                radius={7 / pxPerMm}
                 fill={canvas.drawPreview}
+                stroke={canvas.vertexFill}
+                strokeWidth={2}
+                strokeScaleEnabled={false}
                 listening={false}
               />
             ))}
@@ -442,22 +524,42 @@ export default function Canvas() {
 
         {/* Calibration overlay */}
         {calibration.active && calibration.point1 && (
-          <Circle x={calibration.point1.x} y={calibration.point1.y} radius={5} fill={canvas.calibration} />
+          <Circle
+            x={calibration.point1.x}
+            y={calibration.point1.y}
+            radius={7 / pxPerMm}
+            fill={canvas.calibration}
+            stroke={canvas.vertexFill}
+            strokeWidth={2}
+            strokeScaleEnabled={false}
+            listening={false}
+          />
         )}
         {calibration.active && calibration.point2 && (
-          <Circle x={calibration.point2.x} y={calibration.point2.y} radius={5} fill={canvas.calibration} />
+          <Circle
+            x={calibration.point2.x}
+            y={calibration.point2.y}
+            radius={7 / pxPerMm}
+            fill={canvas.calibration}
+            stroke={canvas.vertexFill}
+            strokeWidth={2}
+            strokeScaleEnabled={false}
+            listening={false}
+          />
         )}
-        {calibration.active && calibration.point1 && calibration.point2 && (
+        {calibration.active && calibration.point1 && calibrationPreviewEnd && (
           <Line
             points={[
               calibration.point1.x,
               calibration.point1.y,
-              calibration.point2.x,
-              calibration.point2.y,
+              calibrationPreviewEnd.x,
+              calibrationPreviewEnd.y,
             ]}
             stroke={canvas.calibration}
-            strokeWidth={2}
-            dash={[5, 3]}
+            strokeWidth={3}
+            strokeScaleEnabled={false}
+            dash={[8, 5]}
+            listening={false}
           />
         )}
       </Layer>

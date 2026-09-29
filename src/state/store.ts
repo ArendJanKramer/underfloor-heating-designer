@@ -104,6 +104,7 @@ interface StoreState {
   moveBackground: (deltaX: number, deltaY: number) => void;
   setToolMode: (mode: ToolMode) => void;
   setManifold: (pos: Point) => void;
+  removeManifold: () => void;
   updateManifoldPosition: (pos: Point) => void;
   setManifoldRotation: (rotationDeg: number) => void;
   addDrawingPoint: (pt: Point) => void;
@@ -115,6 +116,8 @@ interface StoreState {
   finishDrawRect: (pt: Point) => void;
   cancelDrawRect: () => void;
   deleteZone: (id: string) => void;
+  removeZoneLeaderRoute: (id: string) => void;
+  removeAllLeaderRoutes: () => void;
   selectZone: (id: string | null) => void;
   updateZoneSpacing: (id: string, spacingMm: number) => void;
   updateZonePadding: (id: string, paddingMm: number) => void;
@@ -159,11 +162,7 @@ interface StoreState {
    * it. The drawn waypoints stay put — only the derived approach re-aims.
    */
   slideZoneManifoldPort: (zoneId: string, pt: Point) => void;
-  /**
-   * Resize the imported floor plan by `factor`, holding `anchor` still — what calibration
-   * does once it learns the plan came in at the wrong size. Nothing else in the drawing
-   * moves: zones and the manifold are authored in real millimetres and are already right.
-   */
+  /** Resize the plan and traced geometry about the measured calibration point. */
   rescaleBackground: (factor: number, anchor: Point) => void;
   setMaxCircuitLength: (m: number) => void;
   setDefaultSpacing: (mm: number) => void;
@@ -794,6 +793,15 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
     set({ manifold, toolMode: 'select', routing: null, zones: recomputeZones(get().zones, manifold) });
   },
 
+  removeManifold: () => set((state) => ({
+    manifold: null,
+    routing: null,
+    toolMode: state.toolMode === 'routeLeader' || state.toolMode === 'placeManifold'
+      ? 'select'
+      : state.toolMode,
+    zones: state.zones.map(clearZoneLeaderRouting),
+  })),
+
   updateManifoldPosition: (pos) => {
     const rotationDeg = get().manifold?.rotationDeg ?? 0;
     const manifold = { position: pos, rotationDeg };
@@ -853,7 +861,7 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
     });
   },
 
-  cancelDrawing: () => set({ drawingPoints: [], toolMode: 'select' }),
+  cancelDrawing: () => set({ drawingPoints: [], drawRectStart: null, toolMode: 'select' }),
 
   startDrawRect: (pt) => set({ drawRectStart: pt }),
 
@@ -902,6 +910,16 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
       zones: state.zones.filter((zone) => zone.id !== id),
       selectedZoneId: state.selectedZoneId === id ? null : state.selectedZoneId,
     })),
+
+  removeZoneLeaderRoute: (id) => set((state) => ({
+    zones: state.zones.map((zone) => zone.id === id ? clearZoneLeaderRouting(zone) : zone),
+    routing: state.routing?.zoneId === id ? null : state.routing,
+  })),
+
+  removeAllLeaderRoutes: () => set((state) => ({
+    zones: state.zones.map(clearZoneLeaderRouting),
+    routing: null,
+  })),
 
   selectZone: (id) => set({ selectedZoneId: id }),
 
@@ -1158,20 +1176,30 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
 
   rescaleBackground: (factor, anchor) => {
     if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return;
-    const { background } = get();
+    const { background, zones, manifold } = get();
     if (!background) return;
 
-    /*
-     * Only the plan resizes. Zones, the manifold and every routed leader are authored in
-     * real millimetres — a room drawn 4 000 mm wide is 4 000 mm wide — so they are already
-     * correct and must not be touched. What calibration discovers is that the *imported
-     * plan* came in at the wrong size, and that is the one thing it corrects.
-     *
-     * The scaling is anchored on the first point clicked, so the feature the user
-     * measured from stays under the cursor and the plan grows or shrinks away from it,
-     * rather than sliding off as it would if it scaled about the drawing origin.
-     */
-    set({ background: scaleBackgroundAbout(background, factor, anchor) });
+    // The zone boundaries and routed paths were traced on the plan at its old scale.
+    // Keep them on the same features when the scale changes. Pipe spacing and padding
+    // are physical measurements, so they retain their values in millimetres.
+    const about = (point: Point): Point => ({
+      x: anchor.x + (point.x - anchor.x) * factor,
+      y: anchor.y + (point.y - anchor.y) * factor,
+    });
+    const scaledManifold = manifold ? { ...manifold, position: about(manifold.position) } : null;
+    const scaledZones = zones.map((zone) => ({
+      ...zone,
+      polygon: { points: zone.polygon.points.map(about) },
+      leaderWaypoints: zone.leaderWaypoints?.map(about) ?? null,
+      manifoldPortOffsetMm: zone.manifoldPortOffsetMm === null
+        ? null
+        : zone.manifoldPortOffsetMm * factor,
+    }));
+    set({
+      background: scaleBackgroundAbout(background, factor, anchor),
+      manifold: scaledManifold,
+      zones: recomputeZones(scaledZones, scaledManifold),
+    });
   },
 
   setMaxCircuitLength: (m) => set({ maxCircuitLengthM: m }),
@@ -1196,7 +1224,16 @@ const createStoreState: StateCreator<StoreState, [], []> = (set, get) => ({
 
   clearMeasurement: () => set({ measurement: { start: null, end: null } }),
 
-  startCalibration: () => set({ calibration: { active: true, point1: null, point2: null } }),
+  startCalibration: () =>
+    set({
+      calibration: { active: true, point1: null, point2: null },
+      // Calibration owns the next two canvas clicks. Clear any drawing mode so those
+      // clicks cannot accidentally become polygon vertices instead.
+      toolMode: 'select',
+      drawingPoints: [],
+      drawRectStart: null,
+      routing: null,
+    }),
 
   addCalibrationPoint: (pt) => {
     const { calibration } = get();
