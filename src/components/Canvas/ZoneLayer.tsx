@@ -1,10 +1,11 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import Konva from 'konva';
 import { Circle, Group, Layer, Line } from 'react-konva';
 import { Point, ToolMode, Zone } from '../../types';
 import { useStore } from '../../state/store';
 import { getSpiralStubs } from '../../geometry/spiral';
-import { isAxisAlignedRect, resizeRectFromCorner } from '../../geometry/rect';
+import { constrainRectCornerToAspect, isAxisAlignedRect, resizeRectFromCorner } from '../../geometry/rect';
+import { scalePolygonFromVertex } from '../../geometry/polygonScale';
 import { canvas, palette } from '../../theme';
 
 const SELECTED_DASH = [6, 6];
@@ -41,20 +42,84 @@ interface Props {
   toolMode: ToolMode;
   /** Screen pixels per millimetre — handles are sized in screen terms, not drawing ones. */
   pxPerMm: number;
+  onCursorChange: (cursor: string | null) => void;
 }
 
 const VERTEX_HANDLE_RADIUS_PX = 6;
 const STUB_DOT_RADIUS_PX = 4;
 
-function ZoneLayer({ zones, selectedZoneId, toolMode, pxPerMm }: Props) {
+interface ActiveVertexDrag {
+  node: Konva.Node;
+  zoneId: string;
+  vertexIndex: number;
+  originalPoints: Point[];
+  pointer: Point;
+  shiftPressed: boolean;
+}
+
+function ZoneLayer({ zones, selectedZoneId, toolMode, pxPerMm, onCursorChange }: Props) {
   const updateZoneVertex = useStore((state) => state.updateZoneVertex);
+  const updateZonePolygon = useStore((state) => state.updateZonePolygon);
+  const moveZone = useStore((state) => state.moveZone);
   const selectZone = useStore((state) => state.selectZone);
   const setToolMode = useStore((state) => state.setToolMode);
   const startRouteZone = useStore((state) => state.startRouteZone);
   const routing = useStore((state) => state.routing);
   const selectedLineRefWhite = useRef<Konva.Line | null>(null);
   const selectedLineRefBlack = useRef<Konva.Line | null>(null);
+  const activeVertexDragRef = useRef<ActiveVertexDrag | null>(null);
+  const hoveredPolygonVertexRef = useRef(false);
   const [dragPreview, setDragPreview] = useState<{ zoneId: string; points: Point[] } | null>(null);
+
+  const previewVertexDrag = useCallback((drag: ActiveVertexDrag) => {
+    const isRect = isAxisAlignedRect(drag.originalPoints);
+    const points = isRect
+      ? resizeRectFromCorner(
+          drag.originalPoints,
+          drag.vertexIndex,
+          drag.shiftPressed
+            ? constrainRectCornerToAspect(drag.originalPoints, drag.vertexIndex, drag.pointer)
+            : drag.pointer,
+        )
+      : drag.shiftPressed
+        ? scalePolygonFromVertex(drag.originalPoints, drag.vertexIndex, drag.pointer)
+        : drag.originalPoints.map((point, index) =>
+            index === drag.vertexIndex ? drag.pointer : point,
+          );
+    drag.node.position(points[drag.vertexIndex]);
+    setDragPreview({ zoneId: drag.zoneId, points });
+  }, []);
+
+  useEffect(() => {
+    const updateShift = (pressed: boolean) => {
+      const drag = activeVertexDragRef.current;
+      if (!drag) {
+        if (hoveredPolygonVertexRef.current) onCursorChange(pressed ? 'nwse-resize' : 'move');
+        return;
+      }
+      if (drag.shiftPressed === pressed) return;
+      drag.shiftPressed = pressed;
+      previewVertexDrag(drag);
+      if (!isAxisAlignedRect(drag.originalPoints)) {
+        onCursorChange(pressed ? 'nwse-resize' : 'move');
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') updateShift(true);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') updateShift(event.shiftKey);
+    };
+    const onBlur = () => updateShift(false);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [onCursorChange, previewVertexDrag]);
 
   useEffect(() => {
     const whiteNode = selectedLineRefWhite.current;
@@ -76,24 +141,51 @@ function ZoneLayer({ zones, selectedZoneId, toolMode, pxPerMm }: Props) {
 
   const vertexHandleRadiusMm = VERTEX_HANDLE_RADIUS_PX / pxPerMm;
   const stubDotRadiusMm = STUB_DOT_RADIUS_PX / pxPerMm;
+  // Konva hit testing uses draw order. Put the active zone and its handles last,
+  // so another zone cannot cover a corner while the user edits it.
+  const orderedZones = [
+    ...zones.filter((zone) => zone.id !== selectedZoneId),
+    ...zones.filter((zone) => zone.id === selectedZoneId),
+  ];
 
   return (
     <Layer>
-      {zones.map((zone) => {
+      {orderedZones.map((zone) => {
         const isSelected = zone.id === selectedZoneId;
         const displayPoints =
           dragPreview && dragPreview.zoneId === zone.id ? dragPreview.points : zone.polygon.points;
         const points = displayPoints.flatMap((point) => [point.x, point.y]);
         const zoneBorderColor = mixHexColors(zone.color, palette.slate900, 0.18);
+        const isRect = isAxisAlignedRect(zone.polygon.points);
 
         return (
-          <Group key={zone.id}>
+          <Group
+            key={zone.id}
+            draggable={isSelected && (toolMode === 'select' || toolMode === 'editBoundary')}
+            onDragStart={(event) => {
+              if (event.target === event.currentTarget) onCursorChange('grabbing');
+            }}
+            onDragEnd={(event) => {
+              if (event.target !== event.currentTarget) return;
+              event.cancelBubble = true;
+              const delta = { x: event.target.x(), y: event.target.y() };
+              event.target.position({ x: 0, y: 0 });
+              if (delta.x !== 0 || delta.y !== 0) moveZone(zone.id, delta);
+              onCursorChange('grab');
+            }}
+          >
             <Line
               points={points}
               closed
               // Transparent (not undefined) when unselected, so the zone stays clickable —
               // an undefined fill/stroke would drop it out of Konva's hit detection.
               fill={isSelected ? `${zone.color}33` : 'transparent'}
+              onMouseEnter={() => {
+                if (toolMode === 'select' || toolMode === 'editBoundary') {
+                  onCursorChange(isSelected ? 'grab' : 'pointer');
+                }
+              }}
+              onMouseLeave={() => onCursorChange(null)}
               onClick={(event) => {
                 if (toolMode === 'routeLeader') {
                   if (!routing) {
@@ -201,22 +293,55 @@ function ZoneLayer({ zones, selectedZoneId, toolMode, pxPerMm }: Props) {
                   strokeWidth={2}
                   strokeScaleEnabled={false}
                   draggable
+                  onMouseEnter={(event) => {
+                    if (!isRect) {
+                      hoveredPolygonVertexRef.current = true;
+                      onCursorChange(event.evt.shiftKey ? 'nwse-resize' : 'move');
+                      return;
+                    }
+                    const opposite = displayPoints[(vertexIndex + 2) % 4];
+                    onCursorChange((point.x - opposite.x) * (point.y - opposite.y) >= 0
+                      ? 'nwse-resize'
+                      : 'nesw-resize');
+                  }}
+                  onMouseLeave={() => {
+                    hoveredPolygonVertexRef.current = false;
+                    onCursorChange(null);
+                  }}
                   onClick={(event) => {
                     event.cancelBubble = true;
                   }}
+                  onDragStart={(event) => {
+                    activeVertexDragRef.current = {
+                      node: event.target,
+                      zoneId: zone.id,
+                      vertexIndex,
+                      originalPoints: zone.polygon.points,
+                      pointer: { x: event.target.x(), y: event.target.y() },
+                      shiftPressed: event.evt.shiftKey,
+                    };
+                  }}
                   onDragMove={(event) => {
-                    const pos = { x: event.target.x(), y: event.target.y() };
-                    const nextPoints = isAxisAlignedRect(zone.polygon.points)
-                      ? resizeRectFromCorner(zone.polygon.points, vertexIndex, pos)
-                      : zone.polygon.points.map((p, i) => (i === vertexIndex ? pos : p));
-                    setDragPreview({ zoneId: zone.id, points: nextPoints });
+                    const drag = activeVertexDragRef.current;
+                    if (!drag) return;
+                    drag.pointer = { x: event.target.x(), y: event.target.y() };
+                    drag.shiftPressed = event.evt.shiftKey;
+                    previewVertexDrag(drag);
                   }}
                   onDragEnd={(event) => {
                     event.cancelBubble = true;
-                    updateZoneVertex(zone.id, vertexIndex, {
-                      x: event.target.x(),
-                      y: event.target.y(),
-                    });
+                    const drag = activeVertexDragRef.current;
+                    activeVertexDragRef.current = null;
+                    if (drag?.shiftPressed && !isRect) {
+                      updateZonePolygon(zone.id, scalePolygonFromVertex(
+                        drag.originalPoints, vertexIndex, drag.pointer,
+                      ));
+                    } else {
+                      const pos = drag?.shiftPressed && isRect
+                        ? constrainRectCornerToAspect(drag.originalPoints, vertexIndex, drag.pointer)
+                        : drag?.pointer ?? { x: event.target.x(), y: event.target.y() };
+                      updateZoneVertex(zone.id, vertexIndex, pos);
+                    }
                     setDragPreview(null);
                   }}
                 />

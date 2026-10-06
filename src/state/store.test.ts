@@ -562,3 +562,20 @@ describe('useStore persistence', () => {
     expect(JSON.stringify(saved)).not.toContain('pixelsPerMeter');
   });
 });
+
+describe('moving a selected zone', () => {
+  it('moves its polygon and regenerated pipe, and clears an obsolete leader route', () => {
+    const store = createUfhStore();
+    store.setState({
+      zones: [{ ...persistedZone, leaderWaypoints: [{ x: 500, y: 2200 }], leaderLengthMm: 1000 }],
+      manifold: { position: { x: 500, y: 3000 } },
+    });
+    store.getState().moveZone('zone-1', { x: 300, y: -200 });
+    const zone = store.getState().zones[0];
+    expect(zone.polygon.points[0]).toEqual({ x: 300, y: -200 });
+    expect(zone.areaMm2).toBe(4_000_000);
+    expect(zone.spiralLengthMm).toBeGreaterThan(0);
+    expect(zone.leaderWaypoints).toBeNull();
+    expect(zone.leaderLengthMm).toBe(0);
+  });
+});

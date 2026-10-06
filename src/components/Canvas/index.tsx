@@ -40,6 +40,7 @@ export default function Canvas() {
   const backgroundPanFromRef = useRef<{ x: number; y: number } | null>(null);
   const [spacePressed, setSpacePressed] = useState(false);
   const [stageDragging, setStageDragging] = useState(false);
+  const [zoneCursor, setZoneCursor] = useState<string | null>(null);
 
   const {
     background,
@@ -69,6 +70,8 @@ export default function Canvas() {
     moveBackground,
   } = useStore();
 
+  useEffect(() => setZoneCursor(null), [toolMode, selectedZoneId]);
+
   useEffect(() => {
     const handleResize = () => {
       setViewport({
@@ -95,11 +98,13 @@ export default function Canvas() {
     };
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') {
+        stageRef.current?.stopDrag();
         setSpacePressed(false);
         setStageDragging(false);
       }
     };
     const handleBlur = () => {
+      stageRef.current?.stopDrag();
       setSpacePressed(false);
       setStageDragging(false);
     };
@@ -314,7 +319,7 @@ export default function Canvas() {
       ? 'crosshair'
       : toolMode === 'panBackground'
         ? 'grab'
-        : 'default';
+        : zoneCursor ?? 'default';
 
   // Live preview of the leader path (rendered doubled) while routing.
   const routePreview = (() => {
@@ -378,9 +383,10 @@ export default function Canvas() {
       onMouseLeave={() => {
         endBackgroundPan();
         setMousePos(null);
+        setZoneCursor(null);
       }}
       onWheel={handleWheel}
-      draggable={spacePressed || (toolMode === 'select' && !calibration.active)}
+      draggable={spacePressed}
       x={stageX}
       y={stageY}
       scaleX={pxPerMm}
@@ -418,6 +424,7 @@ export default function Canvas() {
         selectedZoneId={selectedZoneId}
         toolMode={toolMode}
         pxPerMm={pxPerMm}
+        onCursorChange={setZoneCursor}
       />
       <LeaderLayer zones={zones} manifold={manifold} pxPerMm={pxPerMm} />
       <ManifoldLayer manifold={manifold} zones={zones} pxPerMm={pxPerMm} />
